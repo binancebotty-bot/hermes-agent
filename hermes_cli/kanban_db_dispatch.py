@@ -1192,6 +1192,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            if dead.code not in (None, 0):
+                dead.event_payload["worker_log_path"] = str(_kb.worker_log_path(row["id"], board=board))
             apply_attempt_note(conn, row["id"], pid, dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
