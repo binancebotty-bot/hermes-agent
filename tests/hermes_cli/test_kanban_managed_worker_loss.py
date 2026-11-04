@@ -310,3 +310,18 @@ def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     board.conn.commit()
     record_worker_loss(policy, "managed_worker_failed", pid=1234, bound=False)
     assert count() == 1
+
+
+def test_audit3_nonzero_short_run_persists_worker_log_path(board):
+    """A non-zero worker's log must be locatable after its short run is reclaimed."""
+    from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+
+    run_id = board.running("t_short_nonzero", owner=False, dead_seconds=2)
+    log = kb.worker_log_path("t_short_nonzero")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("AUDIT3_SHORT_EXIT_MARKER\\n" + KANBAN_WORKER_EXIT_TRAILER + "1\\n",
+                   encoding="utf-8")
+    board.tick(failure_limit=2)
+    run = board.run(run_id)
+    assert run["outcome"] == "crashed"
+    assert json.loads(run["metadata"])["worker_log_path"] == str(log)
