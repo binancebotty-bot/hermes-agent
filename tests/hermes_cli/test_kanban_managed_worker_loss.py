@@ -319,7 +319,7 @@ def test_audit3_nonzero_short_run_persists_worker_log_path(board):
     run_id = board.running("t_short_nonzero", owner=False, dead_seconds=2)
     log = kb.worker_log_path("t_short_nonzero")
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("AUDIT3_SHORT_EXIT_MARKER\\n" + KANBAN_WORKER_EXIT_TRAILER + "1\\n",
+    log.write_text("AUDIT3_SHORT_EXIT_MARKER\n" + KANBAN_WORKER_EXIT_TRAILER + "1\n",
                    encoding="utf-8")
     board.tick(failure_limit=2)
     run = board.run(run_id)
