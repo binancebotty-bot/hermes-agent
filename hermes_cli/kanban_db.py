@@ -3193,11 +3193,12 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       last_failure_error = ?,
                        {set_sql}
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """
-        params = (*params, task_id)
+        params = (reason, *params, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
