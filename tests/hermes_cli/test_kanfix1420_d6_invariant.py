@@ -36,11 +36,12 @@ def test_d6_unblock_clears_stale_block_metadata(board):
     assert after.block_recurrences == 0
 
 
-def test_d6_dependency_wait_does_not_leave_typed_nonblocked_status(board):
-    tid = kb.create_task(board, title="D6 dependent")
+def test_d6_loop_breaker_triage_clears_nonblocked_metadata(board, monkeypatch):
+    monkeypatch.setattr(kb, "BLOCK_RECURRENCE_LIMIT", 1)
+    tid = kb.create_task(board, title="D6 loop breaker")
     assert kb.claim_task(board, tid) is not None
-    assert kb.block_task(board, tid, kind="dependency", reason="fixture")
+    assert kb.block_task(board, tid, kind="transient", reason="fixture")
     after = kb.get_task(board, tid)
-    assert after.status != "blocked"
+    assert after.status == "triage"
     assert after.block_kind is None
     assert after.block_recurrences == 0
