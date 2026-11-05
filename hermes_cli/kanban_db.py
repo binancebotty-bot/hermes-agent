@@ -2389,9 +2389,10 @@ def release_stale_claims(
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ? "
-                # A worker that registered its own pid since the SELECT keeps its claim.
-                "AND worker_pid IS ?",
-                (retry_status, row["id"], row["claim_lock"], now, row["worker_pid"]),
+                # A re-bound or recycled PID cannot inherit the stale owner's claim.
+                "AND worker_pid IS ? AND worker_started_at IS ?",
+                (retry_status, row["id"], row["claim_lock"], now,
+                 row["worker_pid"], started_at),
             )
             if cur.rowcount != 1:
                 continue
