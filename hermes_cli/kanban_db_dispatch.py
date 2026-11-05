@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -126,6 +127,8 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_provider_capped: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` deferred by the per-provider lane cap."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -170,6 +173,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_provider_capped:
+            counts["skipped_provider_capped"] = counts.get("skipped_provider_capped", 0) + len(res.skipped_provider_capped)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -2049,6 +2054,63 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+
+def _read_provider_caps() -> tuple[Optional[dict[str, int]], Optional[str]]:
+    """Read the existing lane cap file once per dispatch pass; refuse corrupt state."""
+    caps_file = _kb.kanban_home() / "state" / "kanban_lane_caps.json"
+    try:
+        raw = json.loads(caps_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        return None, f"caps_unreadable:{type(exc).__name__}"
+    if not isinstance(raw, dict) or any(
+        not isinstance(key, str) or not key.strip() or type(value) is not int
+        for key, value in raw.items()
+    ):
+        return None, "caps_malformed"
+    caps: dict[str, int] = {}
+    for key, value in raw.items():
+        normalized = key.strip().lower()
+        if normalized in caps:
+            return None, "caps_malformed:duplicate_provider"
+        caps[normalized] = value
+    return caps, None
+
+
+def _effective_task_provider(task: Task, assignee: str) -> str:
+    """Use explicit pin, pinned model's known provider, then assignee config."""
+    explicit = str(task.provider_override or "").strip().lower()
+    if explicit and explicit != "auto":
+        return explicit
+    profile_provider = ""
+    try:
+        from hermes_cli.profiles import _read_config_model, resolve_profile_env
+        _profile_model, selected = _read_config_model(Path(resolve_profile_env(assignee)))
+        profile_provider = str(selected or "").strip().lower()
+    except Exception:
+        pass
+    if task.model_override:
+        try:
+            from hermes_cli.models import detect_static_provider_for_model
+            inferred = detect_static_provider_for_model(task.model_override, profile_provider or "auto")
+            if inferred and inferred[0]:
+                return str(inferred[0]).strip().lower()
+        except Exception:
+            # An unrecognized model never becomes implicitly uncapped.
+            pass
+    return profile_provider if profile_provider and profile_provider != "auto" else "unset"
+
+
+def _provider_cap_zero(
+    conn: sqlite3.Connection, task: Task, *,
+    caps: Optional[Mapping[str, int]], cap_error: Optional[str],
+    provider: str,
+) -> bool:
+    """Missing provider keys use the 'unset' cap; no usable caps blocks."""
+    if cap_error is not None or caps is None:
+        return True
+    return caps.get(provider, caps.get("unset", 0)) <= 0
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2063,6 +2125,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    provider_caps: Optional[Mapping[str, int]],
+    provider_caps_error: Optional[str],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2089,6 +2153,29 @@ def _dispatch_lane_task(
                 if (last is None or last["kind"] != "skipped_nonspawnable"
                         or last["payload"] != _kb._json_or_null({"assignee": assignee})):
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
+        return False
+    # A task is not claimed, nor a worker spawned, until its effective provider
+    # is checked. _lane_rows selects only id and assignee, so read its pinned model.
+    task = _kb.get_task(conn, task_id)
+    if task is None:
+        return False
+    provider = _effective_task_provider(task, assignee)
+    if _provider_cap_zero(
+        conn, task, caps=provider_caps, cap_error=provider_caps_error, provider=provider,
+    ):
+        cap_key = provider if provider_caps is not None and provider in provider_caps else "unset"
+        reason = f"provider={provider};cap={cap_key};{provider_caps_error or 'cap_zero'}"
+        result.skipped_provider_capped.append((task_id, reason))
+        if not dry_run:
+            payload = {"provider": provider, "reason": reason}
+            with _kb.write_txn(conn):
+                last = conn.execute(
+                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+                ).fetchone()
+                if (last is None or last["kind"] != "skipped_provider_capped"
+                        or last["payload"] != _kb._json_or_null(payload)):
+                    _kb._append_event(conn, task_id, "skipped_provider_capped", payload)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -2308,6 +2395,8 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    provider_caps: Optional[Mapping[str, int]] = None,
+    provider_caps_error: Optional[str] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2328,6 +2417,14 @@ def _any_spawnable_review(
         if profile_exists is not None and not profile_exists(assignee):
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+            continue
+        task = _kb.get_task(conn, row["id"])
+        if task is None:
+            continue
+        provider = _effective_task_provider(task, assignee)
+        if _provider_cap_zero(
+            conn, task, caps=provider_caps, cap_error=provider_caps_error, provider=provider,
+        ):
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
@@ -2383,6 +2480,7 @@ def _dispatch_once_locked(
     if not may_spawn:
         return result
 
+    provider_caps, provider_caps_error = _read_provider_caps()
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
@@ -2415,12 +2513,14 @@ def _dispatch_once_locked(
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        provider_caps=provider_caps, provider_caps_error=provider_caps_error,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        provider_caps=provider_caps, provider_caps_error=provider_caps_error,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
