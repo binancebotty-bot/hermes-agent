@@ -45,3 +45,19 @@ def test_d6_loop_breaker_triage_clears_nonblocked_metadata(board, monkeypatch):
     assert after.status == "triage"
     assert after.block_kind is None
     assert after.block_recurrences == 0
+
+
+def test_d6_recurrence_guard_uses_event_history_after_metadata_reset(board, monkeypatch):
+    monkeypatch.setattr(kb, "BLOCK_RECURRENCE_LIMIT", 2)
+    tid = kb.create_task(board, title="D6 loop history")
+    assert kb.claim_task(board, tid) is not None
+    assert kb.block_task(board, tid, kind="transient", reason="first")
+    assert kb.get_task(board, tid).status == "blocked"
+    assert kb.unblock_task(board, tid)
+    assert kb.get_task(board, tid).block_kind is None
+    assert kb.claim_task(board, tid) is not None
+    assert kb.block_task(board, tid, kind="transient", reason="second")
+    after = kb.get_task(board, tid)
+    assert after.status == "triage"
+    assert after.block_kind is None
+    assert after.block_recurrences == 0
