@@ -3241,9 +3241,24 @@ def block_task(
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
+        # D6: typed columns belong to blocked rows only. Recover recurrence
+        # history from the append-only event on a newly unblocked card instead
+        # of preserving misleading live block metadata across transitions.
+        prev_kind = _row_get(cur_row, "block_kind")
+        prev_recurrences = int(_row_get(cur_row, "block_recurrences") or 0)
+        if prev_kind is None:
+            prior_block = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? "
+                "AND kind IN ('blocked', 'block_loop_detected') "
+                "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            if prior_block is not None:
+                old_block = _json_dict(prior_block["payload"])
+                prev_kind = old_block.get("kind")
+                prev_recurrences = int(old_block.get("recurrences") or 1)
         new_status, event_kind, set_sql, params, payload = _route_block(
-            kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
-            prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            kind, reason, source_status, prev_kind=prev_kind,
+            prev_recurrences=prev_recurrences,
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
