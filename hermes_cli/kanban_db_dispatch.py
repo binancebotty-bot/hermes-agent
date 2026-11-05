@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -123,6 +124,10 @@ class DispatchResult:
     on multi-lane setups, NOT operator-actionable; tracked apart so health
     telemetry can tell "stuck" from "correctly idle"."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    skipped_per_provider_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    skipped_provider_unset_or_unknown: list[str] = field(default_factory=list)
+    skipped_provider_caps_invalid: list[str] = field(default_factory=list)
+    skipped_provider_quarantined: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
@@ -2049,6 +2054,51 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _provider_admission_limits() -> tuple[dict[str, int], set[str], bool]:
+    """Read provider admission once per tick; malformed/missing policy denies spawns."""
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    try:
+        raw = json.loads((home / "state" / "kanban_lane_caps.json").read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or not all(
+            isinstance(key, str) and key.strip() and type(cap) is int and cap >= 0
+            for key, cap in raw.items()
+        ):
+            return {}, set(), False
+        state_path = home / "state" / "kanban_replenisher.json"
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        if not isinstance(state, dict) or not isinstance(state.get("quarantined_lanes", {}), dict):
+            return {}, set(), False
+        quarantined = {
+            key for key, value in state.get("quarantined_lanes", {}).items()
+            if isinstance(value, dict) and value.get("open")
+        }
+        return raw, quarantined, True
+    except (OSError, ValueError, TypeError):
+        return {}, set(), False
+
+
+def _provider_admission_allowed(
+    task_id: str, provider: str, result: DispatchResult,
+    provider_caps: dict[str, int], quarantined_lanes: set[str],
+    provider_caps_valid: bool, provider_running: dict[str, int],
+) -> bool:
+    """Common fail-closed admission guard for manual CLI and gateway ticks."""
+    if not provider_caps_valid:
+        result.skipped_provider_caps_invalid.append(task_id)
+        return False
+    if not provider or provider == "unset" or provider not in provider_caps:
+        result.skipped_provider_unset_or_unknown.append(task_id)
+        return False
+    if provider in quarantined_lanes:
+        result.skipped_provider_quarantined.append((task_id, provider))
+        return False
+    active = provider_running.get(provider, 0)
+    if active >= provider_caps[provider]:
+        result.skipped_per_provider_capped.append((task_id, provider, active))
+        return False
+    return True
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2063,6 +2113,10 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    provider_caps: Optional[dict[str, int]] = None,
+    quarantined_lanes: Optional[set[str]] = None,
+    provider_caps_valid: bool = False,
+    provider_running: Optional[dict[str, int]] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2097,6 +2151,18 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # Enforce provider quotas at the common spawn gate, never only in gateway.
+    # Read from the row rather than a profile/model inference.
+    prow = conn.execute(
+        "SELECT COALESCE(NULLIF(TRIM(provider_override), ''), 'unset') AS provider "
+        "FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    provider = prow["provider"] if prow else "unset"
+    if not _provider_admission_allowed(
+        task_id, provider, result, provider_caps or {}, quarantined_lanes or set(),
+        provider_caps_valid, provider_running if provider_running is not None else {},
+    ):
+        return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2113,6 +2179,8 @@ def _dispatch_lane_task(
         return False
 
     def _count_spawn(name: str) -> None:
+        if provider_running is not None:
+            provider_running[provider] = provider_running.get(provider, 0) + 1
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
@@ -2417,7 +2485,17 @@ def _dispatch_once_locked(
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
+    provider_caps, quarantined_lanes, provider_caps_valid = _provider_admission_limits()
+    provider_running: dict[str, int] = {}
+    for prow in conn.execute(
+        "SELECT COALESCE(NULLIF(TRIM(provider_override), ''), 'unset') AS provider, "
+        "COUNT(*) AS n FROM tasks WHERE status = 'running' "
+        "GROUP BY COALESCE(NULLIF(TRIM(provider_override), ''), 'unset')"
+    ):
+        provider_running[prow["provider"]] = int(prow["n"])
     lane_kwargs: dict[str, Any] = dict(
+        provider_caps=provider_caps, quarantined_lanes=quarantined_lanes,
+        provider_caps_valid=provider_caps_valid, provider_running=provider_running,
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
