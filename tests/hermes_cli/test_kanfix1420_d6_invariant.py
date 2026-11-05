@@ -24,6 +24,7 @@ def board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_d6_unblock_clears_stale_block_metadata(board):
     tid = kb.create_task(board, title="D6 typed blocked")
+    assert kb.claim_task(board, tid) is not None
     assert kb.block_task(board, tid, kind="needs_input", reason="fixture")
     before = kb.get_task(board, tid)
     assert before.status == "blocked"
@@ -37,6 +38,7 @@ def test_d6_unblock_clears_stale_block_metadata(board):
 
 def test_d6_dependency_wait_does_not_leave_typed_nonblocked_status(board):
     tid = kb.create_task(board, title="D6 dependent")
+    assert kb.claim_task(board, tid) is not None
     assert kb.block_task(board, tid, kind="dependency", reason="fixture")
     after = kb.get_task(board, tid)
     assert after.status != "blocked"
