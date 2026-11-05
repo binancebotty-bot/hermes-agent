@@ -182,7 +182,7 @@ def _submit():
             # The busy timeout is a host tuning knob, not task identity: the answer budget reads it.
             if key.startswith('HERMES_KANBAN_') and key not in ('HERMES_KANBAN_HOME', 'HERMES_KANBAN_BUSY_TIMEOUT_MS'):
                 os.environ.pop(key)
-        for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
+        for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT'):
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
     except (KeyError, ValueError, OSError) as exc:
