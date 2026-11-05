@@ -1,4 +1,5 @@
 """KANFIX1420 D1/D2: author tests before any matching production change."""
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,3 +42,22 @@ def test_d2_provider_cap_two_refuses_third_and_unset():
     unset = result()
     assert not gate("unassigned", "unset", unset, {"nvidia": 2}, set(), True, {})
     assert unset.skipped_provider_unset_or_unknown == ["unassigned"]
+
+
+def test_d2_common_dispatch_once_rejects_overcap_on_manual_path(board, monkeypatch):
+    """The manual CLI and gateway both enter dispatch_once. Test that real tick."""
+    home = Path(__import__("os").environ["HERMES_HOME"])
+    state = home / "state"
+    state.mkdir(exist_ok=True)
+    (state / "kanban_lane_caps.json").write_text(json.dumps({"nvidia": 2, "unset": 0}))
+    monkeypatch.setattr(dispatch, "_profile_exists_fn", lambda: lambda _name: True)
+    for i in range(2):
+        tid = kb.create_task(board, title=f"running {i}", assignee="worker",
+                             provider_override="nvidia", model_override="allowed")
+        assert kb.claim_task(board, tid) is not None
+    third = kb.create_task(board, title="third", assignee="worker",
+                           provider_override="nvidia", model_override="allowed")
+    outcome = dispatch.dispatch_once(board, dry_run=True, max_spawn=1,
+                                     reconcile_orphans=False)
+    assert not any(row[0] == third for row in outcome.spawned)
+    assert (third, "nvidia", 2) in outcome.skipped_per_provider_capped
