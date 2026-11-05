@@ -149,3 +149,26 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+def test_reclaim_refuses_rebound_process_identity_during_termination(board, monkeypatch):
+    """Rebound worker identity with SAME PID and lock must defeat stale reclaim CAS."""
+    conn = board
+    tid = _claimed_running(conn, pid=3_800_001, started_at="old-epoch|111")
+    old_lock = conn.execute("SELECT claim_lock FROM tasks WHERE id=?", (tid,)).fetchone()[0]
+
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, start: False)
+    def rebound_before_cas(pid, lock, **kwargs):
+        # Simulate new worker binding same numeric PID + lock after stale SELECT.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET worker_started_at=? WHERE id=?",
+                         ("new-epoch|222", tid))
+        return {"host_local": True, "termination_attempted": False,
+                "terminated": True, "prev_pid": pid}
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", rebound_before_cas)
+    assert kb.release_stale_claims(conn) == 0
+    row = conn.execute("SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id=?",
+                       (tid,)).fetchone()
+    assert (row["status"], row["claim_lock"], row["worker_pid"], row["worker_started_at"]) == (
+        "running", old_lock, 3_800_001, "new-epoch|222")
