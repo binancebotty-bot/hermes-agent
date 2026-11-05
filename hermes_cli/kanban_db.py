@@ -1252,11 +1252,27 @@ def create_task(
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
+                # Each scratch card owns its own concrete workspace, even when
+                # decomposed callers passed the parent's directory.
+                if workspace_kind == "scratch":
+                    workspace_path = str(workspaces_root(board=board) / task_id)
+                elif workspace_kind == "worktree" and workspace_path:
+                    candidate = Path(workspace_path)
+                    if candidate.parent.name == ".worktrees" and candidate.name != task_id:
+                        workspace_path = str(candidate.parent / task_id)
                 if project_obj is not None and workspace_kind == "worktree":
                     if project_repo and not workspace_path:
                         workspace_path = os.path.join(project_repo, ".worktrees", task_id)
                     if not branch_name:
-                        branch_name = _project_branch_name(project_obj, task_id, title)
+                        branch_name = _project_branch_name(project_obj, task_id)
+                if workspace_kind == "dir" and workspace_path:
+                    duplicate = conn.execute(
+                        "SELECT id FROM tasks WHERE workspace_path=? "
+                        "AND status NOT IN ('done','archived','cancelled') LIMIT 1",
+                        (workspace_path,),
+                    ).fetchone()
+                    if duplicate:
+                        raise ValueError("workspace collision with active task " + str(duplicate["id"]))
 
                 conn.execute(
                     """
@@ -1328,6 +1344,51 @@ def create_task(
             if attempt == 1:
                 raise
     raise RuntimeError("unreachable")
+
+
+def repair_colliding_workspaces(
+    conn: sqlite3.Connection, *, board: Optional[str] = None, apply: bool = False,
+) -> dict[str, list[str]]:
+    """Preview-first collision repair. Never move live owners or populated paths."""
+    rows = conn.execute(
+        "SELECT id, status, workspace_kind, workspace_path FROM tasks "
+        "WHERE status NOT IN ('done','archived','cancelled') "
+        "AND workspace_path IS NOT NULL ORDER BY workspace_path, id"
+    ).fetchall()
+    groups: dict[str, list] = {}
+    for row in rows:
+        groups.setdefault(os.path.normcase(os.path.normpath(row["workspace_path"])), []).append(row)
+    eligible, held = [], []
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        for row in group:
+            tid = row["id"]
+            if row["status"] in ("running", "review") or row["workspace_kind"] != "scratch":
+                held.append(tid)
+                continue
+            source = Path(row["workspace_path"]).expanduser()
+            target = workspaces_root(board=board) / tid
+            if source == target:
+                held.append(tid)
+                continue
+            if source.exists() and (not source.is_dir() or any(source.iterdir())):
+                held.append(tid)
+                continue
+            if apply:
+                with write_txn(conn):
+                    cur = conn.execute(
+                        "UPDATE tasks SET workspace_path=? WHERE id=? "
+                        "AND status NOT IN ('running','review','done','archived','cancelled')",
+                        (str(target), tid),
+                    )
+                    if cur.rowcount != 1:
+                        held.append(tid)
+                        continue
+                    _append_event(conn, tid, "workspace_repaired",
+                                  {"old": str(source), "new": str(target)})
+            eligible.append(tid)
+    return {("repaired" if apply else "eligible"): eligible, "held": held}
 
 
 def _board_meta_for(board: Optional[str]) -> dict:
