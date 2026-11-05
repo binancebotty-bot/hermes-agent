@@ -61,3 +61,21 @@ def test_d2_common_dispatch_once_rejects_overcap_on_manual_path(board, monkeypat
                                      reconcile_orphans=False)
     assert not any(row[0] == third for row in outcome.spawned)
     assert (third, "nvidia", 2) in outcome.skipped_per_provider_capped
+
+
+def test_d1_repair_is_preview_first_and_never_mutates_live_card(board, tmp_path):
+    ids = [kb.create_task(board, title=f"legacy {i}", workspace_kind="scratch") for i in range(3)]
+    shared = str(tmp_path / "legacy-shared")
+    with kb.write_txn(board):
+        board.execute("UPDATE tasks SET workspace_path=?, status='ready' WHERE id IN (?,?)",
+                      (shared, ids[0], ids[1]))
+        board.execute("UPDATE tasks SET workspace_path=?, status='running' WHERE id=?",
+                      (shared, ids[2]))
+    preview = kb.repair_colliding_workspaces(board, apply=False)
+    assert set(preview["eligible"]) == set(ids[:2])
+    assert ids[2] in preview["held"]
+    assert all(kb.get_task(board, tid).workspace_path == shared for tid in ids)
+    applied = kb.repair_colliding_workspaces(board, apply=True)
+    assert set(applied["repaired"]) == set(ids[:2])
+    assert kb.get_task(board, ids[2]).workspace_path == shared
+    assert len({kb.get_task(board, tid).workspace_path for tid in ids}) == 3
