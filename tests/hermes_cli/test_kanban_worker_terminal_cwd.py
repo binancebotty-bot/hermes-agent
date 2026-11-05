@@ -79,3 +79,47 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
 
 
+
+
+def test_terminal_cwd_survives_owner_handoff_without_task_identity(monkeypatch, tmp_path):
+    """The owner keeps the workspace anchor, never the worker's task identity."""
+    import os
+    from hermes_cli import kanban_worker_client as client
+
+    workspace = str(tmp_path / "task-workspace")
+    monkeypatch.setenv("TERMINAL_CWD", workspace)
+    task_env = {
+        "HERMES_KANBAN_BOARD": "test-board",
+        "HERMES_KANBAN_TASK": "t_cwd",
+        "HERMES_KANBAN_RUN_ID": "7",
+        "HERMES_KANBAN_CLAIM_LOCK": "test-lock",
+        "HERMES_KANBAN_DB": str(tmp_path / "board.db"),
+        "HERMES_KANBAN_WORKSPACE": workspace,
+        "HERMES_KANBAN_GOAL_MODE": "1",
+        "HERMES_SESSION_SOURCE": "kanban",
+        "HERMES_TENANT": "worker-tenant",
+        "HERMES_KANBAN_HOME": str(tmp_path / "kanban-home"),
+        "HERMES_KANBAN_BUSY_TIMEOUT_MS": "1000",
+    }
+    for key, value in task_env.items():
+        monkeypatch.setenv(key, value)
+
+    observed = {}
+
+    def capture_owner_environment(_unused):
+        observed.update(os.environ)
+        return 0
+
+    monkeypatch.setattr(client, "run", lambda _params, _board_db: None)
+    monkeypatch.setattr(client.asyncio, "run", capture_owner_environment)
+    assert client._submit() == 0
+    assert observed["TERMINAL_CWD"] == workspace
+    for key in ("HERMES_SESSION_SOURCE", "HERMES_TENANT"):
+        assert key not in observed
+    for key in task_env:
+        if key.startswith("HERMES_KANBAN_") and key not in (
+            "HERMES_KANBAN_HOME", "HERMES_KANBAN_BUSY_TIMEOUT_MS"
+        ):
+            assert key not in observed
+    assert observed["HERMES_KANBAN_HOME"] == task_env["HERMES_KANBAN_HOME"]
+    assert observed["HERMES_KANBAN_BUSY_TIMEOUT_MS"] == "1000"
