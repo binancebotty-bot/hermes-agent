@@ -251,6 +251,10 @@ def _deliver_harness(tmp_path, sessions, chat_id="a"):
     n._send_pings = fake_send_pings
     n._owner_scope = lambda: contextlib.nullcontext()
     n.sub_profile = ""
+    n.wake_kinds = set()
+    n.is_push_adapter = True
+    n.wake_agent = False
+    n.send_passive = True
     n.task = None
     return n, sub, seen
 
