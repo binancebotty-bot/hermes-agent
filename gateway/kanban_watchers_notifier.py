@@ -220,6 +220,64 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     return primary if profile == primary_profile else None
 
 
+# --- D-ROLLOVER: a saved local session id is a HINT, validated at delivery time ---
+#
+# Hermes rolls a long session over automatically: the old row gets ended_at + end_reason='compression'
+# and a CHILD row (parent_session_id = old id, same source, same profile) continues the conversation.
+# Subagent rows are also children of a session, so "any live child" or "newest live session" would
+# deliver to the wrong agent. The only accepted successor is the single same-source, same-profile
+# child of a session that ended with a rollover reason. Anything else fails closed (None + reason).
+LOCAL_SESSION_PLATFORMS = frozenset({"desktop", "tui", "local"})
+ROLLOVER_END_REASONS = frozenset({"compression"})
+_MAX_ROLLOVER_HOPS = 200
+# Exact SQL predicates (read-only connection):
+_SQL_BY_ID = "SELECT id, source, profile_name, ended_at, end_reason, chat_id FROM sessions WHERE id = ?"
+_SQL_BY_CHAT = "SELECT id, source, profile_name, ended_at, end_reason, chat_id FROM sessions WHERE chat_id = ? AND source = ?"
+_SQL_SUCCESSORS = (
+    "SELECT id, source, profile_name, ended_at, end_reason, chat_id FROM sessions "
+    "WHERE parent_session_id = ? AND source = ? AND COALESCE(profile_name, '') = COALESCE(?, '')"
+)
+
+
+def resolve_live_local_session(conn: Any, saved_id: str, platform: str) -> tuple:
+    """Validate ``saved_id`` against the sessions table.
+
+    Returns ``(status, delivery_id, reason)``. status is ``live`` (saved id is live, delivery_id ==
+    saved_id), ``rebound`` (delivery_id is the unambiguous rollover successor) or ``failed``
+    (delivery_id None; the caller must log and rewind the cursor so the event stays pending).
+    Never picks a session by recency.
+    """
+    row = conn.execute(_SQL_BY_ID, (saved_id,)).fetchone()
+    if row is None:
+        rows = conn.execute(_SQL_BY_CHAT, (saved_id, platform)).fetchall()
+        if len(rows) != 1:
+            return "failed", None, ("saved id not found in sessions" if not rows
+                                    else f"saved id matches {len(rows)} sessions by chat_id (ambiguous)")
+        row = rows[0]
+    cur = row
+    if cur[3] is None:
+        return "live", saved_id, ""
+    seen = {cur[0]}
+    for _ in range(_MAX_ROLLOVER_HOPS):
+        sid, source, profile, _ended, end_reason, _chat = cur
+        if source != platform:
+            return "failed", None, f"session {sid} source {source!r} != platform {platform!r}"
+        if end_reason not in ROLLOVER_END_REASONS:
+            return "failed", None, f"session {sid} ended with {end_reason!r}, not a rollover; no successor"
+        kids = conn.execute(_SQL_SUCCESSORS, (sid, source, profile)).fetchall()
+        if not kids:
+            return "failed", None, f"session {sid} rolled over but has no same-source successor"
+        if len(kids) > 1:
+            return "failed", None, f"session {sid} has {len(kids)} same-source successors (ambiguous)"
+        cur = kids[0]
+        if cur[0] in seen:
+            return "failed", None, "rollover cycle"
+        seen.add(cur[0])
+        if cur[3] is None:
+            return "rebound", cur[5] or cur[0], ""
+    return "failed", None, "rollover chain too long"
+
+
 # --- Collection (runs in a worker thread) ---
 
 
@@ -497,12 +555,17 @@ class _KanbanNotification:
     is at-least-once queueing, not an execution or final-response receipt.
     """
 
+    _REBOUND_LOGGED: set = set()
+    _DEAD_RECIPIENT_LOGGED: set = set()
+
     def __init__(self, runner: Any, d: dict, *, platform_cls: Any, sub_fail_counts: dict) -> None:
         self.runner = runner
         self.d = d
         self.platform_cls = platform_cls
         self.sub_fail_counts = sub_fail_counts
         self.sub = sub = d["sub"]
+        self._delivery_sub: Optional[dict] = None  # rollover-resolved view; self.sub stays the persisted identity
+        self._dead_recipient = False
         self.task = task = d["task"]
         self.board_slug = d.get("board")
         self.platform_str = (sub["platform"] or "").lower()
@@ -525,6 +588,60 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+
+    @property
+    def dsub(self) -> dict:
+        """Sub as seen by delivery (chat_id possibly rebound by D-ROLLOVER); cursor ops use ``self.sub``."""
+        return self._delivery_sub or self.sub
+
+    def _state_db_path(self):
+        profile = self.sub.get("notifier_profile") or ""
+        try:
+            if profile:
+                from hermes_cli.profiles import get_profile_dir
+                return get_profile_dir(profile) / "state.db"
+            from hermes_constants import get_hermes_home
+            return get_hermes_home() / "state.db"
+        except Exception as exc:  # fail closed
+            logger.warning("kanban notifier: cannot resolve state.db for profile %r: %s", profile, exc)
+            return None
+
+    def _guard_stale_local_session(self) -> None:
+        """D-ROLLOVER. Sets ``self._dead_recipient`` when delivery must not proceed (caller rewinds the cursor)."""
+        import sqlite3
+        self._dead_recipient = False
+        self._delivery_sub = None
+        platform = (self.sub.get("platform") or "").strip().lower()
+        chat_id = (self.sub.get("chat_id") or "").strip()
+        if platform not in LOCAL_SESSION_PLATFORMS or not chat_id:
+            return
+        db = self._state_db_path()
+        status, target, why = "failed", None, "state.db unavailable"
+        if db is not None:
+            try:
+                conn = sqlite3.connect(f"file:{str(db).replace(chr(92), '/')}?mode=ro", uri=True, timeout=5)
+                try:
+                    status, target, why = resolve_live_local_session(conn, chat_id, platform)
+                finally:
+                    conn.close()
+            except Exception as exc:
+                status, target, why = "failed", None, f"state.db lookup error: {exc}"
+        if status == "live":
+            return
+        if status == "rebound":
+            self._delivery_sub = {**self.sub, "chat_id": target}
+            pair = (platform, chat_id, target)
+            if pair not in _KanbanNotification._REBOUND_LOGGED:
+                _KanbanNotification._REBOUND_LOGGED.add(pair)
+                logger.warning("kanban notifier: D-ROLLOVER rebound %s target %s -> %s (task=%s)",
+                               platform, chat_id, target, self.task_id)
+            return
+        key = (platform, chat_id, self.task_id)
+        if key not in _KanbanNotification._DEAD_RECIPIENT_LOGGED:
+            _KanbanNotification._DEAD_RECIPIENT_LOGGED.add(key)
+            logger.warning("kanban notifier: D-ROLLOVER FAILED for %s target %s task=%s: %s; "
+                           "cursor rewound, event stays pending", platform, chat_id, self.task_id, why)
+        self._dead_recipient = True
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -574,7 +691,7 @@ class _KanbanNotification:
 
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
-        task, sub = self.task, self.sub
+        task, sub = self.task, self.dsub
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
@@ -604,7 +721,7 @@ class _KanbanNotification:
 
     def _log_woke(self) -> None:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                    self.task_id, self.platform_str, self.sub["chat_id"], self.sub_profile or "default", self.wake_kinds)
+                    self.task_id, self.platform_str, self.dsub["chat_id"], self.sub_profile or "default", self.wake_kinds)
 
     def _served_wake_profile(self) -> Optional[str]:
         """The subscription's profile when THIS gateway is a multiplexer serving it, else ``None``.
@@ -626,13 +743,13 @@ class _KanbanNotification:
             return contextlib.nullcontext()
         from gateway.run import _async_profile_runtime_scope
         from gateway.session import SessionSource
-        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=served_profile)
+        source = SessionSource(platform=self.plat, chat_id=self.dsub["chat_id"], profile=served_profile)
         return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
 
     async def wake(self) -> None:
         """Wake the creator session (raises on failure): push adapters get a full SessionSource, non-push a raw self-post."""
         from gateway.wake import deliver_wake
-        sub = self.sub
+        sub = self.dsub
         if not self.is_push_adapter:
             # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
             # shared listener's /p/<profile>/ self-post would need the profile's own
@@ -676,7 +793,7 @@ class _KanbanNotification:
     async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
         from gateway.warning_notifications import present_notification
-        sub, adapter = self.sub, self.adapter
+        sub, adapter = self.dsub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
@@ -763,6 +880,11 @@ class _KanbanNotification:
             await self.rewind()
             return
         self.adapter = adapter
+        if self.platform_str in LOCAL_SESSION_PLATFORMS:
+            await asyncio.to_thread(self._guard_stale_local_session)
+            if self._dead_recipient:
+                await self.rewind()  # never advance past an undeliverable event; subscription untouched
+                return
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
 
