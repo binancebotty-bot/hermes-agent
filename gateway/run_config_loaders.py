@@ -41,6 +41,12 @@ DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
+# Per-source busy override kinds (``display.busy_input_mode_by_source``) and the mode each kind
+# defaults to when the override map is set: typed-in-the-UI input interrupts; MCP / router /
+# coordinator relays queue. Ordinary messaging platforms have no kind and keep the global mode.
+_BUSY_SOURCE_KIND_DEFAULTS = {"ui": "interrupt", "inter_agent": "queue"}
+_BUSY_INTER_AGENT_PLATFORMS = frozenset({Platform.RELAY, Platform.API_SERVER, Platform.WEBHOOK})
+
 
 class GatewayConfigLoadersMixin:
     """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner."""
@@ -354,8 +360,54 @@ class GatewayConfigLoadersMixin:
         modes = getattr(self, attr + "s_by_profile", None)
         return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
 
+    @staticmethod
+    def _busy_source_kind(source: SessionSource) -> Optional[str]:
+        """Per-source busy override kind for an inbound message, or None when the global mode applies.
+
+        "ui" = typed in the Hermes UI (the LOCAL surface); "inter_agent" = machine ingress (MCP,
+        router and coordinator relays arrive as RELAY / API_SERVER / WEBHOOK). Ordinary messaging
+        platforms have no kind and keep the global/profile mode unchanged.
+        """
+        platform = getattr(source, "platform", None)
+        if platform == Platform.LOCAL:
+            return "ui"
+        if platform in _BUSY_INTER_AGENT_PLATFORMS:
+            return "inter_agent"
+        return None
+
+    @staticmethod
+    def _busy_modes_by_source_from_config(config: dict) -> dict[str, str]:
+        """``display.busy_input_mode_by_source`` normalized to the known kinds; {} when unset.
+
+        Presence of the key (even an empty mapping) turns per-source resolution ON: a valid
+        entry wins, an invalid entry warns and falls back to the kind default, and an unmapped
+        known kind gets its default (ui -> interrupt, inter_agent -> queue). Unknown keys are
+        ignored; a null/absent key keeps the global mode.
+        """
+        raw = cfg_get(config, "display", "busy_input_mode_by_source", default=None)
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, str] = {}
+        for kind, default in _BUSY_SOURCE_KIND_DEFAULTS.items():
+            entry = str(raw.get(kind, "") or "").strip().lower()
+            if entry and entry not in _BUSY_INPUT_MODES:
+                logger.warning(
+                    "display.busy_input_mode_by_source.%s=%r is not one of %s; using %s",
+                    kind, raw.get(kind), sorted(_BUSY_INPUT_MODES), default,
+                )
+            out[kind] = entry if entry in _BUSY_INPUT_MODES else default
+        return out
+
     def _effective_busy_input_mode(self, source: SessionSource) -> str:
-        """Resolve busy input mode from the routed profile startup snapshot."""
+        """Resolve busy input mode for this source: the per-source override
+        (``display.busy_input_mode_by_source``, read in the caller's profile scope) when set,
+        else the routed profile snapshot, else the global mode."""
+        kind = self._busy_source_kind(source)
+        if kind:
+            from gateway.run import _load_gateway_config
+            by_source = self._busy_modes_by_source_from_config(_load_gateway_config())
+            if by_source:
+                return by_source[kind]
         return self._effective_busy_mode(source, "_busy_input_mode")
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
