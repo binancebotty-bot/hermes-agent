@@ -260,9 +260,18 @@ class SessionAuthority:
             # owner's live state. A stale observation or a genuinely busy seat is refused by name BEFORE any
             # text is admitted, which is the only place the window can be closed.
             from gateway.session_admission_fence import evaluate
+            from hermes_state_runtime import list_session_admissions
             handle = self._handle(request.ref)
-            refusal = evaluate(expect, generation=handle.execution_generation, state=handle.execution_state)
+            # The turn counter is the admission sequence: it advances on every admitted prompt. runtime_generation
+            # does not (it moves on compress/roll/prepared mutations), so it can only be a secondary guard.
+            _admissions = list_session_admissions(self.db, session_id=request.ref.session_id, pending_only=False)
+            _seq = _admissions[-1]['seq'] if _admissions else 0
+            refusal = evaluate(expect, generation=handle.execution_generation, state=handle.execution_state,
+                               admission_seq=_seq)
             if refusal:
+                # A refused submit must not hold captured attachment bytes: release the lease before refusing.
+                from gateway.session_ingress_media import drop_capture_lease
+                drop_capture_lease()
                 raise RuntimeStoreError(refusal)
             if authorize is not None:
                 authorize(conn)

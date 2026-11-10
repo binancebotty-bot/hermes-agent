@@ -31,28 +31,29 @@ class Transcript:
 class Owner:
     """The authority's admission gate: observation compared under the session mutation lock."""
 
-    def __init__(self, generation=7, state="idle"):
-        self.generation = generation
+    def __init__(self, generation=7, state="idle", seq=0):
+        self.generation = generation      # runtime_generation: moves on compress/roll, NOT per turn
+        self.seq = seq                    # admission sequence: advances once per admitted turn
         self.state = state
         self.lock = threading.Lock()
         self.transcript = Transcript()
 
     def submit(self, text, expect):
         with self.lock:                       # the real gate runs inside the session's mutation lock
-            refusal = evaluate(expect, generation=self.generation, state=self.state)
+            refusal = evaluate(expect, generation=self.generation, state=self.state, admission_seq=self.seq)
             if refusal:
                 return {"status": "refused", "reason": refusal, "row": None}
             row = self.transcript.admit(text, self.generation)
             # Admitting opens a turn: the session's generation advances, which is exactly what makes another
             # submitter's observation stale from that instant on.
-            self.generation += 1
+            self.seq += 1                 # a new turn: the counter the caller observes advances
             self.state = "running"
             return {"status": "admitted", "reason": None, "row": row}
 
 
 # 1 ------------------------------------------------------------------ competing turn: one wins, zero absorbed
 def test_competing_turn_race_one_wins_loser_refused_and_nothing_absorbed():
-    owner = Owner(generation=7, state="idle")
+    owner = Owner(generation=7, state="idle", seq=7)
     observed = {"expect_turn": 7, "expect_generation": 7}
 
     results = []
@@ -84,9 +85,19 @@ def test_stale_observation_is_refused_by_name():
     assert owner.transcript.texts() == []
 
 
+def test_second_turn_is_stale_even_though_generation_never_moved():
+    """runtime_generation does not advance per turn, so keying staleness to it would silently pass a stale submit."""
+    owner = Owner(generation=7, state="idle", seq=4)
+    assert owner.submit("first", {"expect_turn": 4})["status"] == "admitted"
+    owner.state = "idle"                    # the turn finished; generation is STILL 7
+    out = owner.submit("second", {"expect_turn": 4})
+    assert out["reason"] == STALE_TURN_REFUSED, out
+    assert owner.transcript.texts() == ["first"]
+
+
 # 2 ------------------------------------------------------------------ busy seat: explicit refusal, turn untouched
 def test_busy_seat_refuses_explicitly_and_modifies_nothing():
-    owner = Owner(generation=7, state="running")
+    owner = Owner(generation=7, state="running", seq=7)
     before = list(owner.transcript.rows)
     out = owner.submit("steer me", {"expect_generation": 7, "expect_turn": 7})
     assert out["status"] == "refused" and out["reason"] == SEAT_BUSY

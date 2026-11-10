@@ -59,20 +59,24 @@ def normalize_expectation(params: Mapping[str, Any]) -> Optional[dict]:
     return out
 
 
-def evaluate(expect: Optional[Mapping[str, Any]], *, generation: int, state: str) -> Optional[str]:
+def evaluate(expect: Optional[Mapping[str, Any]], *, generation: int, state: str,
+             admission_seq: Optional[int] = None) -> Optional[str]:
     """Decide admission for an observation against the owner's live state.
 
-    ``generation`` is the session's live execution generation and ``state`` its live execution state, both
-    read by the owner under the session mutation lock - never inferred by the caller.
+    ``admission_seq`` is the session's last admission sequence - the counter that actually advances once per
+    admitted turn. ``generation`` (``runtime_generation``) moves on compression, roll and prepared mutations, NOT on
+    every turn, so it is a secondary guard only: comparing it alone would let a stale observation look current.
+
+    Both are read by the owner under the session mutation lock, never inferred by the caller.
     """
     if not expect:
         return None
     expected_generation = expect.get("expect_generation")
     expected_turn = expect.get("expect_turn")
-    # ``expect_turn`` and ``expect_generation`` address the same counter: the generation is the turn identity.
-    for value in (expected_generation, expected_turn):
-        if value is not None and value != generation:
-            return STALE_TURN_REFUSED
+    if expected_turn is not None and admission_seq is not None and expected_turn != admission_seq:
+        return STALE_TURN_REFUSED
+    if expected_generation is not None and expected_generation != generation:
+        return STALE_TURN_REFUSED
     if state == "running":
         return SEAT_BUSY
     return None

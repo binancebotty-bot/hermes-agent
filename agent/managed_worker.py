@@ -450,7 +450,33 @@ def hello():
     return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
+def _parent_death_monitor():
+    """On Windows, managed workers do not reliably detect gateway death via stdin pipe closure.
+    Poll the parent process; if it dies, exit so we don't orphan and burn credits."""
+    import time
+    import psutil
+    parent_pid = os.getppid()
+    try:
+        parent = psutil.Process(parent_pid)
+    except psutil.NoSuchProcess:
+        os._exit(1)
+        return
+    while True:
+        time.sleep(5)
+        if not parent.is_running():
+            os._exit(1)
+        # Also check if parent has become a zombie or changed
+        try:
+            parent.status()
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            os._exit(1)
+
+
 def main():
+    # Start parent-death monitor on Windows (POSIX workers rely on process-group kill)
+    if os.name == 'nt':
+        t = threading.Thread(target=_parent_death_monitor, daemon=True, name='parent-death-monitor')
+        t.start()
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     # This process's own stderr only, never the channel. The owner drains it into the profile's

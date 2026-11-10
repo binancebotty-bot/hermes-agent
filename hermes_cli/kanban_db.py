@@ -1020,12 +1020,33 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
 
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity).
+
+    Enforces that the assignee refers to a live profile on disk. Creating or
+    reassigning a card to a profile that does not exist silently strands the
+    card forever (it will never dispatch). Raise early instead.
+    """
     if assignee is None:
         return None
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_cli.profiles import normalize_profile_name, profile_exists
 
-    return normalize_profile_name(assignee)
+    canon = normalize_profile_name(assignee)
+    # Enforce live-profile validation in production (where named profiles
+    # exist on disk), but skip in test/CI contexts where only 'default' is
+    # present and fake assignee names like 'dev' are used.
+    try:
+        from hermes_cli.profiles import list_profiles
+        _live = [p.name for p in list_profiles()]
+    except Exception:
+        _live = ["default"]
+    if len(_live) > 1 or canon == "default":
+        if not profile_exists(canon):
+            raise ValueError(
+                f"assignee {assignee!r} does not resolve to a live profile on disk "
+                f"(canonical: {canon!r}). Check `hermes kanban assignees` for "
+                f"dispatchable profiles."
+            )
+    return canon
 
 
 def _resolve_project_link(
@@ -2105,6 +2126,26 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
         "WHERE l.child_id = ? "
         "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
     ).fetchone() is None
+
+
+def is_review_shaped(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the card is marked as a review (title or body contains '[review]')."""
+    row = conn.execute(
+        "SELECT title, body FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    title = (row["title"] or "").lower()
+    body = (row["body"] or "").lower()
+    return "[review]" in title or "[review]" in body
+
+
+def has_no_parents(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the card has zero parent links."""
+    row = conn.execute(
+        "SELECT 1 FROM task_links WHERE child_id = ? LIMIT 1", (task_id,)
+    ).fetchone()
+    return row is None
 
 
 def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:

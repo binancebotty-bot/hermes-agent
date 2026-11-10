@@ -126,6 +126,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_lane_capped: list[tuple[str, str, int, int]] = field(default_factory=list)
+    """``(task_id, lane, running, cap)`` deferred because the task's provider lane is
+    at its ``state/kanban_lane_caps.json`` cap. Retried on a later tick when the lane
+    frees up. This is the HARD per-lane ceiling: without it a single wide-open lane
+    absorbed every slot and its workers rate-limited each other (measured: nous 4
+    running against a cap of 2, 44 rate-limited runs in 3h)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -2112,6 +2118,18 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    # Review-dependency guard: a review-shaped card ([review] in title/body) with
+    # no parents at all must never be dispatched — it has no implementation
+    # dependency to wait for, so it would run immediately and produce a verdict
+    # on an artifact that does not exist yet. Skip it (deferred, not dropped).
+    if _kb.is_review_shaped(conn, task_id) and _kb.has_no_parents(conn, task_id):
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "review_dependency_guard", {
+                    "reason": "review_shaped_card_with_no_parents",
+                })
+        return False
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
@@ -2294,9 +2312,14 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    ``provider_override`` is selected so the dispatcher can enforce the per-lane
+    ceiling before spawning; it is the same value the replenisher uses to pick a lane.
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, COALESCE(provider_override, '') AS provider_override "
+        "FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2424,6 +2447,10 @@ def _dispatch_once_locked(
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
+    # HARD per-lane ceiling. Counted once here and incremented as we spawn, so a
+    # tick cannot put more workers on a lane than its cap allows.
+    lane_caps = _lane_caps()
+    lane_running = _lane_running_counts(conn) if lane_caps else {}
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
@@ -2438,8 +2465,14 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
+        row_lane = (row["provider_override"] or "").strip()
+        has_room, lane_now, lane_cap = _lane_has_room(row_lane, lane_caps, lane_running)
+        if not has_room:
+            result.skipped_lane_capped.append((row["id"], row_lane, lane_now, lane_cap))
+            continue
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
+            lane_running[row_lane] = lane_running.get(row_lane, 0) + 1
 
     # A review agent (sdlc-review) approves (→ done) or requests changes
     # (→ ready/todo). Review spawns share max_spawn with ready tasks. The loop
@@ -2451,8 +2484,20 @@ def _dispatch_once_locked(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+        row_lane = (row["provider_override"] or "").strip()
+        has_room, lane_now, lane_cap = _lane_has_room(row_lane, lane_caps, lane_running)
+        if not has_room:
+            result.skipped_lane_capped.append((row["id"], row_lane, lane_now, lane_cap))
+            continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
+            lane_running[row_lane] = lane_running.get(row_lane, 0) + 1
+    if result.skipped_lane_capped:
+        _kb._log.info(
+            "kanban dispatch: %d card(s) held back by per-lane caps %s",
+            len(result.skipped_lane_capped),
+            sorted({(t[1], t[3]) for t in result.skipped_lane_capped}),
+        )
     return result
 
 
@@ -2955,6 +3000,84 @@ def run_daemon(
             import traceback
             traceback.print_exc()
         stop_event.wait(timeout=interval)
+
+
+def _lane_caps() -> dict[str, int]:
+    """Per-lane concurrency caps from ``state/kanban_lane_caps.json``.
+
+    A missing/unreadable/broken file returns {} — that is fail-OPEN for lanes the file
+    does not mention (pre-existing behaviour must not be broken by a missing file), so
+    an unparseable file never silently stops all dispatch. A lane that IS mentioned is
+    always honoured, including cap 0.
+    """
+    caps_path = Path(os.environ.get('HERMES_HOME', str(Path.home() / '.hermes'))) / 'state' / 'kanban_lane_caps.json'
+    try:
+        import json as _json
+        raw = _json.loads(caps_path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        try:
+            out[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _lane_running_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Running workers per provider lane."""
+    counts: dict[str, int] = {}
+    try:
+        for row in conn.execute(
+            "SELECT COALESCE(provider_override, '') AS lane, COUNT(*) AS n "
+            "FROM tasks WHERE status = 'running' GROUP BY 1"
+        ):
+            counts[row[0]] = int(row[1])
+    except Exception:
+        return {}
+    return counts
+
+
+def _lane_has_room(lane: str, caps: dict[str, int], running: dict[str, int]) -> tuple[bool, int, int]:
+    """``(has_room, running, cap)`` for one lane.
+
+    A lane the caps file mentions is enforced strictly (cap 0 = no spawning). A lane it
+    does not mention keeps the old unmanaged behaviour so an unrelated provider is not
+    frozen out by a caps file that never knew about it.
+    """
+    if not lane:
+        return (True, 0, 0)          # no provider pinned: pre-existing behaviour
+    cap = caps.get(lane, 0)
+    if lane not in caps:
+        return (True, running.get(lane, 0), cap)   # lane not managed by caps file
+    now = running.get(lane, 0)
+    return (now < cap, now, cap)
+
+
+def _provider_cap_zero(con, task_id):
+    """Return (provider, reason) — reason is None when the provider cap is not 0."""
+    try:
+        row = con.execute('SELECT provider_override FROM tasks WHERE id=?', (task_id,)).fetchone()
+    except Exception:
+        return (None, None)
+    if not row:
+        return (None, None)
+    provider = row[0]
+    if not provider:
+        return (None, None)
+    caps_path = Path(os.environ.get('HERMES_HOME', str(Path.home() / '.hermes'))) / 'state' / 'kanban_lane_caps.json'
+    try:
+        import json as _json
+        caps = _json.loads(caps_path.read_text(encoding='utf-8'))
+    except Exception:
+        return (provider, None)
+    cap = caps.get(provider, None)
+    if cap == 0:
+        return (provider, 'provider cap 0 (kanban_lane_caps.json)')
+    return (provider, None)
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

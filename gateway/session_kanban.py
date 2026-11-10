@@ -201,6 +201,15 @@ def bind_worker_context(frame):
     os.environ.update(env)
     os.chdir(context['workspace'])
 
+    # Initialise durable artifact manager for incremental persistence and crash recovery
+    try:
+        from agent.kanban_artifacts import initialise_worker_artifacts
+        initialise_worker_artifacts(context['task_id'], context['run_id'], context['board'])
+    except Exception:
+        # Best-effort: artifact manager failure must not block worker startup
+        import logging
+        logging.getLogger(__name__).debug("kanban artifact manager init failed", exc_info=True)
+
 
 _TURNS_DONE = threading.Event()
 
