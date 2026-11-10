@@ -254,6 +254,16 @@ class SessionAuthority:
         own guard), so a drain that began while the write waited on the writer still refuses it."""
         def guard(conn):
             self._require_admission_open(queue_only=queue_only)
+        expect = getattr(request, 'expect', None)
+        if expect:
+            # Conditional admission (RC-11b15f5b): decided here, inside the session mutation lock, against the
+            # owner's live state. A stale observation or a genuinely busy seat is refused by name BEFORE any
+            # text is admitted, which is the only place the window can be closed.
+            from gateway.session_admission_fence import evaluate
+            handle = self._handle(request.ref)
+            refusal = evaluate(expect, generation=handle.execution_generation, state=handle.execution_state)
+            if refusal:
+                raise RuntimeStoreError(refusal)
             if authorize is not None:
                 authorize(conn)
         return guard

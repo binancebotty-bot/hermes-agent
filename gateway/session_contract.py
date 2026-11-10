@@ -1,7 +1,7 @@
 """Public session authority contract; live execution state never crosses this boundary."""
 
 from dataclasses import dataclass, field
-from typing import Literal, Mapping, Protocol
+from typing import Literal, Mapping, Optional, Protocol
 
 JsonObject = Mapping[str, object]
 
@@ -47,6 +47,9 @@ class Submission:
     ref: SessionRef
     payload: JsonObject
     intent: Literal["queue", "steer", "redirect"]
+    #: The turn the caller observed (conditional admission, RC-11b15f5b). Admission metadata: it is compared
+    #: under the session lock and never written to the transcript.
+    expect: Optional[JsonObject] = None
 
 
 @dataclass(frozen=True)

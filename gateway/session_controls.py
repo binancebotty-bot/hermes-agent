@@ -859,7 +859,8 @@ class AuthorityConnection:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
-                                   'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                                   'turn_author', 'api_text', 'model_override', 'clarify_batch',
+                                   'expect_turn', 'expect_generation'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
@@ -873,7 +874,12 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        return Submission(request_id, ref, payload, 'queue')
+        from gateway.session_admission_fence import normalize_expectation
+        try:
+            expect = normalize_expectation(params)
+        except ValueError:
+            raise RuntimeStoreError('invalid_params')
+        return Submission(request_id, ref, payload, 'queue', expect)
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
