@@ -249,30 +249,29 @@ class SessionAuthority:
             if not (queue_only and restart_wait_open(self.runner)):
                 raise RuntimeStoreError('runtime_draining')
 
-    def _admission_gate(self, authorize=None, *, queue_only=False):
-        """The admission gate re-checked inside an off-loop write transaction (with the caller's
-        own guard), so a drain that began while the write waited on the writer still refuses it."""
+    def _admission_gate(self, authorize=None, *, queue_only=False, expect=None, session_id=None):
+        """The admission gate re-checked inside an off-loop write transaction (with the caller's own guard).
+
+        Two things must be true when the write actually runs, not when the request was parsed: the owner is still
+        admitting (a drain may have begun while we waited on the writer), and - for a conditional submit - the turn
+        the caller observed is still the current one. Both are re-read on THIS connection, inside the transaction, so a
+        commit that landed between our first look and the write cannot slip through.
+        """
         def guard(conn):
             self._require_admission_open(queue_only=queue_only)
-        expect = getattr(request, 'expect', None)
-        if expect:
-            # Conditional admission (RC-11b15f5b): decided here, inside the session mutation lock, against the
-            # owner's live state. A stale observation or a genuinely busy seat is refused by name BEFORE any
-            # text is admitted, which is the only place the window can be closed.
-            from gateway.session_admission_fence import evaluate
-            from hermes_state_runtime import list_session_admissions
-            handle = self._handle(request.ref)
-            # The turn counter is the admission sequence: it advances on every admitted prompt. runtime_generation
-            # does not (it moves on compress/roll/prepared mutations), so it can only be a secondary guard.
-            _admissions = list_session_admissions(self.db, session_id=request.ref.session_id, pending_only=False)
-            _seq = _admissions[-1]['seq'] if _admissions else 0
-            refusal = evaluate(expect, generation=handle.execution_generation, state=handle.execution_state,
-                               admission_seq=_seq)
-            if refusal:
-                # A refused submit must not hold captured attachment bytes: release the lease before refusing.
-                from gateway.session_ingress_media import drop_capture_lease
-                drop_capture_lease()
-                raise RuntimeStoreError(refusal)
+            if expect:
+                from gateway.session_admission_fence import evaluate
+                row = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?',
+                                   (session_id,)).fetchone()
+                generation = row[0] if row is not None else 0
+                seq = conn.execute('SELECT MAX(seq) FROM session_admissions WHERE target_session_id=?',
+                                   (session_id,)).fetchone()[0] or 0
+                state = 'running' if conn.execute(
+                    "SELECT COUNT(*) FROM session_admissions WHERE target_session_id=? "
+                    "AND status IN ('queued','started','unknown')", (session_id,)).fetchone()[0] else 'idle'
+                refusal = evaluate(expect, generation=generation, state=state, admission_seq=seq)
+                if refusal:
+                    raise RuntimeStoreError(refusal)
             if authorize is not None:
                 authorize(conn)
         return guard
@@ -770,7 +769,8 @@ class SessionAuthority:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent, _replay_guard=_replay_guard,
-                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only))
+                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only,
+                                                                  expect=expect, session_id=request.ref.session_id))
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise

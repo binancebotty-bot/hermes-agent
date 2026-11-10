@@ -30,6 +30,11 @@ class PromptSubmitParams(SessionParams):
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
     text: JsonValue = ""
+    # Conditional admission (RC-11b15f5b): the turn the caller observed. Compared against the live session inside the
+    # admission transaction, so a prompt cannot be folded into a turn somebody else started. Admission metadata only -
+    # never written to the transcript.
+    expect_turn: int | None = None
+    expect_generation: int | None = None
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
