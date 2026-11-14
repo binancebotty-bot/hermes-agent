@@ -1,0 +1,18 @@
+LABEL success
+REPO C:\Users\wigmore\worktrees\m3-impl
+MODULE C:\Users\wigmore\worktrees\m3-impl\hermes_cli\kanban_db_dispatch.py
+HOST_PREFIX DESKTOP-V1R1R3U:
+PRODUCTION_BOARD C:\Users\wigmore\.hermes\kanban.db
+PRODUCTION_BOARD_SHA256_BEFORE 1c1524842ea33f1977c83d3e86a410dc2c2db1aa9ec8046517c6176a95dc76e3
+PRODUCTION_BOARD_COUNTS_BEFORE {"tasks": 1722, "task_runs": 8310, "task_events": 201942}
+FIXTURE_PROVENANCE every pid in this run is a child spawned by this script; no board pid is read or used
+DB_DISPOSABLE C:\Users\wigmore\AppData\Local\Temp\m3demo-_qc0vm_i\success.db
+DB_COUNTS_BEFORE {"tasks": 0, "task_runs": 0, "task_events": 0}
+DB_COUNTS_AFTER  {"tasks": 1, "task_runs": 1, "task_events": 4}
+CASE A SUCCESS ok=True launcher=23480 worker=33696 launcher_fp_verified=|179465864302 worker_fp_verified=|179465864376 stored_pid_after=None CLEARS_PER_RUN=1 terminal_worker_reaped_events=2 launcher_alive=False worker_alive=False events_before=['worker_bound', 'worker_bound'] events_after=['worker_bound', 'worker_bound', 'terminal_worker_reaped', 'terminal_worker_reaped']
+CLEANUP ok=True leftover_test_processes=[]
+PRODUCTION_BOARD_COUNTS_AFTER {"tasks": 1722, "task_runs": 8310, "task_events": 201942}
+PRODUCTION_BOARD_SHA256_AFTER ee458559885c7995fb5c9cde6eb9927c13ed25875c1a56da7bf164bd1b660f8b equal_before=False (observation only: the live board moves under measurement; this script opens it with copyfile+hash only)
+PRODUCTION_BOARD_WRITE_TARGET no - every connection created here points at the disposable path printed above
+DISPOSABLE_TMPDIR_REMOVED C:\Users\wigmore\AppData\Local\Temp\m3demo-_qc0vm_i
+EXIT 0

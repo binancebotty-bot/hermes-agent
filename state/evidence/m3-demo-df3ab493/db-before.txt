@@ -1,0 +1,5 @@
+SUCCESS CASE - BEFORE
+PRODUCTION_BOARD C:\Users\wigmore\.hermes\kanban.db
+PRODUCTION_BOARD_COUNTS_BEFORE {"tasks": 1722, "task_runs": 8310, "task_events": 201942}
+DB_DISPOSABLE C:\Users\wigmore\AppData\Local\Temp\m3demo-_qc0vm_i\success.db
+DB_COUNTS_BEFORE {"tasks": 0, "task_runs": 0, "task_events": 0}

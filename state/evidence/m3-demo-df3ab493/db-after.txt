@@ -1,0 +1,4 @@
+SUCCESS CASE - AFTER
+DB_COUNTS_AFTER  {"tasks": 1, "task_runs": 1, "task_events": 4}
+CLEANUP ok=True leftover_test_processes=[]
+PRODUCTION_BOARD_COUNTS_AFTER {"tasks": 1722, "task_runs": 8310, "task_events": 201942}

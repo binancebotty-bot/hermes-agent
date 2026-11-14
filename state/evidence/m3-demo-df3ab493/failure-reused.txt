@@ -1,0 +1,18 @@
+LABEL failure-reused
+REPO C:\Users\wigmore\worktrees\m3-impl
+MODULE C:\Users\wigmore\worktrees\m3-impl\hermes_cli\kanban_db_dispatch.py
+HOST_PREFIX DESKTOP-V1R1R3U:
+PRODUCTION_BOARD C:\Users\wigmore\.hermes\kanban.db
+PRODUCTION_BOARD_SHA256_BEFORE ee458559885c7995fb5c9cde6eb9927c13ed25875c1a56da7bf164bd1b660f8b
+PRODUCTION_BOARD_COUNTS_BEFORE {"tasks": 1722, "task_runs": 8310, "task_events": 201942}
+FIXTURE_PROVENANCE every pid in this run is a child spawned by this script; no board pid is read or used
+DB_DISPOSABLE C:\Users\wigmore\AppData\Local\Temp\m3demo-23ht03bw\reused.db
+DB_COUNTS_BEFORE {"tasks": 0, "task_runs": 0, "task_events": 0}
+DB_COUNTS_AFTER  {"tasks": 1, "task_runs": 1, "task_events": 2}
+CASE C FAILURE-REUSED ok=True synthesised_from_shape_of_live_edge_rows=true foreign_pid=23052 its_REAL_fingerprint=|179465865010 presented_fingerprint=epoch-deliberately-wrong|0 stored_pid_after=23052 CLEARS_PER_RUN=0 foreign_alive=True PID_REUSED=True events=['worker_bound', 'PID_REUSED']
+CLEANUP ok=True leftover_test_processes=[]
+PRODUCTION_BOARD_COUNTS_AFTER {"tasks": 1722, "task_runs": 8310, "task_events": 201942}
+PRODUCTION_BOARD_SHA256_AFTER ee458559885c7995fb5c9cde6eb9927c13ed25875c1a56da7bf164bd1b660f8b equal_before=True (observation only: the live board moves under measurement; this script opens it with copyfile+hash only)
+PRODUCTION_BOARD_WRITE_TARGET no - every connection created here points at the disposable path printed above
+DISPOSABLE_TMPDIR_REMOVED C:\Users\wigmore\AppData\Local\Temp\m3demo-23ht03bw
+EXIT 0
