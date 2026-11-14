@@ -1,0 +1,57 @@
+M3 OPERATIONAL DEMONSTRATION - isolated reap receipts
+========================================================
+subject SHA          df3ab493f7111af4c1028a143f1d3130ca32f3e4   (reviewed; unchanged by this directory)
+parent               4123ad1bab155a179108d91d4edae67e55221932   (the FAIL subject, untouched)
+receipt carrier      1ec21b0a08999c9bc29648d1f1ac4b019c6894e1 (+1 commit: this MANIFEST and the case-insensitive rename)
+written              2026-11-14T12:31:05Z by hermes:systems-engineer
+
+FILES (sha256 of the bytes in this directory)
+
+  success.txt                      1642 B  51a26f3b4ac4eab67d8bb5581b525647c377cce3c68485d22c41e2c87759f4ab
+  failure.txt                      1525 B  989c21f33bae599a181fd3dfea3b3f6c15c117cce818426d229eeafe50d9a732
+  failure-reused.txt               1563 B  3cfb4babf6507dfb06838f43737e012f99b14de56fa92c23f14de5a87794c8f0
+  failure-discrimination.txt       1540 B  9ece0d5ff68174fd10cd99dcd19c20d283f9c99ea595eec558a97feee8a854b9
+  failure-mutation.txt             1534 B  43ef22a6c7b59b623d7f12c3f0e416e0d40eb6c88677ce84aa6d7a7f1755e016
+  db-before.txt                     309 B  0b4d5828efe7601efd9afaff634594095088bd8ccb40e06d96584cac2ea8086f
+  db-after.txt                      220 B  f43267ef71886b26581d84d01fb089e0e02a585d72925064217cf14e4e5f5fa2
+  demo_m3_reap_v3.py              12296 B  eeab726759d692d90942fbdb92cf8e8e8c92f0e9d8c3abaae6b72bc2aaa11da0
+
+RUNS - each command, its own exit code, no pipes anywhere
+  1  --repo <df3ab493> --case A  --label success                 EXIT 0   CLEARS_PER_RUN=1
+  2  --repo <df3ab493> --case B  --label failure                 EXIT 0   CLEARS_PER_RUN=0
+  3  --repo <df3ab493> --case C  --label failure-reused          EXIT 0   CLEARS_PER_RUN=0
+  4  --repo <4123ad1b> --case B  --label failure-discrimination  EXIT 1   CLEARS_PER_RUN=1
+  5  --repo <df3ab493 with the unresolved guard DELETED> --case B --label failure-mutation  EXIT 1  CLEARS_PER_RUN=1
+
+WHAT EACH RECEIPT SHOWS
+  success                launcher and bound worker, fingerprints captured from the REAL child processes and verified; both
+                         terminated; stored pid NULL afterwards; CLEARS_PER_RUN counted from the executed UPDATE via
+                         sqlite's trace callback = 1; two terminal_worker_reaped events, one per pid
+  failure                an UNVERIFIED live binding seeded EARLIER than the verified one: CLEARS_PER_RUN=0 and the stored
+                         pid is STILL PRESENT after the attempt, with the unverified worker alive
+  failure-reused         the SHAPE of the live Edge rows synthesised from our own child: its real fingerprint printed
+                         beside the deliberately wrong one; never signalled, PID_REUSED recorded, CLEARS=0
+  failure-discrimination case B against the reviewed parent: stored pid cleared, worker still alive
+  failure-mutation       unresolved-outcome guard deleted from a scratch checkout: case B goes RED, GREEN again when the
+                         guard is restored - the failure assertion does not depend on the guard existing
+
+ISOLATION - MEASURED
+  production board ~/.hermes/kanban.db, row counts pasted before and after every case:
+    tasks 1722, task_runs 8310, task_events 201942 - identical before and after
+  every connection created points at a DISPOSABLE COPY (copyfile, then emptied); its path is printed in each receipt and
+  the temp directory is removed at the end
+  the production file is opened only by shutil.copyfile (read) and hashlib (read); its sha256 is printed and marked
+  OBSERVATION because a live board moves under measurement - the access path, not the hash, is the proof
+  every pid is a child spawned here (python -c sleep, CREATE_NO_WINDOW) and killed by exact pid
+
+REPRODUCE
+  python state/evidence/m3-demo-df3ab493/demo_m3_reap_v3.py --repo <checkout> --case A|B|C
+  mutation: delete the three lines of the `if unresolved:` block in a SCRATCH checkout at df3ab493, then run case B
+
+OPEN AT THIS POINT - what this does NOT certify
+  1 no production board was exercised: the shipped code path against a disposable copy, not a live reap
+  2 fingerprints come from THIS host's children; a post-reboot or cross-host row is covered only by the reused case
+  3 the admission cutoff (R3/R4/R5) is evidenced by the pytest suite, not by this demonstration
+  4 PID_REUSED repeats once per reap pass while evidence is held - deferred follow-up, not exercised here
+  5 operational acceptance is the Coordinator's and the Controller's to give; this directory is evidence, not a verdict
+
