@@ -502,6 +502,92 @@ def _terminate_reclaimed_worker(
     return info
 
 
+ADMISSION_TERMINAL_KINDS = ("blocked", "cancelled", "completed", "gave_up")
+
+
+def run_scoped_worker_pids(conn: sqlite3.Connection, task_id: str, run_id: int) -> list[tuple[int, str]]:
+    """``[(pid, fingerprint)]`` for ONE run: its stored pid plus its own ``worker_bound`` and ``spawned`` events.
+
+    Scoped to ``run_id`` on purpose. ``kanban_owner_recovery._latest_run_event`` joins
+    ``tasks.current_run_id``, which is right for "the current run" and WRONG inside a reap: the run being
+    reaped has already ended, and a requeue may have moved ``current_run_id`` to a NEWER run, so that join
+    would hand the reaper the live worker's pid. Bound is listed first because it is the process that
+    writes results and comments.
+    """
+    import json
+
+    out: list[tuple[int, str]] = []
+    stored = conn.execute(
+        "SELECT worker_pid, worker_started_at FROM task_runs WHERE id = ? AND task_id = ?",
+        (int(run_id), task_id),
+    ).fetchone()
+    if stored and stored[0]:
+        out.append((int(stored[0]), stored[1]))
+    for kind in ("worker_bound", "spawned"):
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? AND kind = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, int(run_id), kind),
+        ).fetchone()
+        if not event:
+            continue
+        try:
+            payload = json.loads(event[0])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) or not payload.get("pid"):
+            continue
+        out.append((int(payload["pid"]),
+                    payload.get("started_at") or payload.get("birth") or UNVERIFIED_WORKER_FINGERPRINT))
+    ordered, seen = [], set()
+    for pid, fingerprint in out:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        ordered.append((pid, fingerprint))
+    return ordered
+
+
+def admission_cutoff(conn: sqlite3.Connection, task_id: str, run_id: int):
+    """Event id of the run's EARLIEST authoritative terminal transition, or None when it is not terminal.
+
+    ``terminal_worker_reaped`` is deliberately excluded: a reap can only follow a block, so counting it as a
+    terminal transition moves the boundary LATER and makes everything written in between admissible. On the
+    MVP card that window was 23:17:15Z (block) to 23:19:33Z (reap) - 138 seconds in which output would have
+    been admitted on an already-blocked card.
+    """
+    placeholders = ",".join("?" for _ in ADMISSION_TERMINAL_KINDS)
+    row = conn.execute(
+        "SELECT MIN(id) FROM task_events WHERE task_id = ? AND run_id = ? AND kind IN (%s)" % placeholders,
+        (task_id, int(run_id), *ADMISSION_TERMINAL_KINDS),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def admission_verdict(conn: sqlite3.Connection, task_id: str, run_id: int, output_event_id):
+    """``(admissible, cutoff)`` for an output event belonging to this run. Fails CLOSED when the cutoff cannot be read."""
+    try:
+        cutoff = admission_cutoff(conn, task_id, run_id)
+    except sqlite3.Error:
+        return False, None
+    if cutoff is None:
+        return True, None
+    try:
+        position = int(output_event_id)
+    except (TypeError, ValueError):
+        return False, cutoff
+    return position <= cutoff, cutoff
+
+
+def inadmissible_payload(task_id: str, run_id: int, cutoff, output_event_id, pid=None, kind="result") -> dict:
+    """The record written where a refused output would have gone."""
+    return {"reason": "INADMISSIBLE_LATE_OUTPUT", "task_id": task_id, "run_id": int(run_id),
+            "cutoff_event_id": cutoff, "output_event_id": output_event_id,
+            "output_kind": kind, "pid": pid}
+
+
 def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """End host-local workers that outlived their run (issue #111791) — a worker
     that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
@@ -533,31 +619,60 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
 
 
 def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
-    pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+    """Terminate EVERY worker of this run that is still ours, bound worker first; clear only when resolved.
+
+    R1/R2/R6: selection is run-scoped, identity is revalidated immediately before each signal, every outcome
+    is recorded, and an UNRESOLVED outcome (self-guard, unverified identity, recycled pid, failed termination)
+    prohibits the optimistic clear so the row keeps the evidence of what may still be running.
+    """
+    task_id, run_id = row["task_id"], int(row["id"])
+    if not str(row["claim_lock"] or "").startswith(host_prefix):
         return
-    if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-        return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
-    alive = _worker_alive(pid, fingerprint)
-    termination = None
-    if alive:
-        termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
-        if not termination["terminated"]:
-            return  # still alive: try again next tick
+    pids = run_scoped_worker_pids(conn, task_id, run_id)
+    if not pids:
+        return
+    unresolved = []
+    terminated_any = False
+    for pid, fingerprint in pids:
+        if pid == os.getpid():
+            unresolved.append(("SKIPPED_SELF", pid, fingerprint))
+            continue
+        live = _kb._pid_alive(pid)
+        if fingerprint == UNVERIFIED_WORKER_FINGERPRINT:
+            if live:
+                unresolved.append(("SKIPPED_UNVERIFIED", pid, fingerprint))
+            continue
+        if live and _pid_recycled(pid, fingerprint):
+            current = _process_fingerprint(pid)
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "PID_REUSED",
+                                  {"pid": pid, "recorded": fingerprint, "current": current},
+                                  run_id=run_id)
+            unresolved.append(("PID_REUSED", pid, fingerprint))
+            continue
+        if not live:
+            continue
+        termination = _terminate_reclaimed_worker(pid, row["claim_lock"], signal_fn=signal_fn,
+                                                  started_at=fingerprint)
+        if not termination.get("terminated"):
+            unresolved.append(("TERMINATION_FAILED", pid, fingerprint))
+            continue
+        terminated_any = True
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "terminal_worker_reaped",
+                              {"pid": pid, "worker_started_at": fingerprint, **termination},
+                              run_id=run_id)
+    if unresolved:
+        _kb._log.debug("reap of run %s left unresolved outcomes %r", run_id, unresolved)
+        return
     with _kb.write_txn(conn):
         conn.execute(
             "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
             "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
-            (row["id"], pid, fingerprint),
+            (row["id"], int(row["worker_pid"]), row["worker_started_at"]),
         )
-        if alive:
-            _kb._append_event(
-                conn, row["task_id"], "terminal_worker_reaped",
-                {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
-            )
-    if alive:
-        reaped.append(row["task_id"])
+    if terminated_any:
+        reaped.append(task_id)
 
 
 def _worker_survived_termination(termination: dict) -> bool:

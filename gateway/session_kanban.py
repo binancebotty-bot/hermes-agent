@@ -314,6 +314,16 @@ def _record_worker_result(context, code, last_output):
     from hermes_cli import kanban_db as kb
     with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
         if _bound_worker_matches(conn, context):
+            # R4: the admission check sits INSIDE this transaction, so the terminal transition cannot
+            # commit between the check and the append.
+            from hermes_cli import kanban_db_dispatch as _dispatch
+            cutoff = _dispatch.admission_cutoff(conn, context['task_id'], int(context['run_id']))
+            if cutoff is not None:
+                kb._append_event(conn, context['task_id'], 'INADMISSIBLE_LATE_OUTPUT',
+                    _dispatch.inadmissible_payload(context['task_id'], int(context['run_id']), cutoff,
+                                                   None, pid=os.getpid(), kind='result'),
+                    run_id=context['run_id'])
+                return
             # Closing a run clears its claim/PID and replaces metadata; keep the
             # result in the immutable attempt event stream instead.
             kb._append_event(conn, context['task_id'], 'worker_result',
@@ -374,10 +384,26 @@ def _bound_claim_is_live(context):
 def worker_result(path, params):
     """Read only the dispatcher's exact attempt; never infer success from admission settlement."""
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
-        row = conn.execute("SELECT payload FROM task_events WHERE run_id=? AND task_id=? AND kind='worker_result' ORDER BY id DESC LIMIT 1",
+        row = conn.execute("SELECT id, payload FROM task_events WHERE run_id=? AND task_id=? AND kind='worker_result' ORDER BY id DESC LIMIT 1",
             (params['run_id'], params['task_id'])).fetchone()
-        result = json.loads(row[0]) if row else {}
-        return result if result.get('claim_lock') == params['claim_lock'] else {}
+        result = json.loads(row[1]) if row else {}
+        if not result or result.get('claim_lock') != params['claim_lock']:
+            return {}
+        # A result written after this run's earliest terminal transition is LATE OUTPUT (R3): it is not
+        # this attempt's outcome, and reading it would report work the card had already closed out.
+        from hermes_cli import kanban_db_dispatch as _dispatch
+        admissible, cutoff = _dispatch.admission_verdict(conn, params['task_id'], int(params['run_id']), row[0])
+        if not admissible:
+            _log_inadmissible_read(params, cutoff, row[0])
+            return {}
+        return result
+
+
+def _log_inadmissible_read(params, cutoff, event_id):
+    import logging
+    logging.getLogger(__name__).warning(
+        'INADMISSIBLE_LATE_OUTPUT refused at read: task=%s run=%s event=%s cutoff=%s',
+        params.get('task_id'), params.get('run_id'), event_id, cutoff)
 
 
 def worker_exit_code(path, params):
