@@ -132,6 +132,16 @@ class DispatchResult:
     frees up. This is the HARD per-lane ceiling: without it a single wide-open lane
     absorbed every slot and its workers rate-limited each other (measured: nous 4
     running against a cap of 2, 44 rate-limited runs in 3h)."""
+    skipped_no_model: list[str] = field(default_factory=list)
+    """Ready task ids refused because the card states no model. A card with no
+    ``model_override`` would inherit its assignee profile's default route — on
+    this host the paid ``gpt-6-luna`` / ``openai-codex`` lane — silently. The
+    dispatcher refuses instead of falling back to it; the card stays ``ready``
+    and dispatches once a model is stated on it."""
+    lane_cycles: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, from_provider, to_provider)`` moved to the next free lane after
+    a capacity/hard refusal, so the whole free list is tried before reporting
+    exhaustion instead of retrying the same lane for 8 backoff steps."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -176,6 +186,10 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_no_model:
+            counts["skipped_no_model"] = counts.get("skipped_no_model", 0) + len(res.skipped_no_model)
+        if res.lane_cycles:
+            counts["lane_cycles"] = counts.get("lane_cycles", 0) + len(res.lane_cycles)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -1162,6 +1176,9 @@ class _CrashSweep:
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
+    # ``(task_id, provider, dead_worker)``: a worker that died on a capacity /
+    # hard refusal, cycled to the next free lane after the txn commits.
+    lane_cycles: list[tuple[str, str, _DeadWorker]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1172,7 +1189,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, "
+            "COALESCE(provider_override, '') AS provider_override "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1199,6 +1217,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
             apply_attempt_note(conn, row["id"], pid, dead)
+            if dead.rate_limited or is_lane_refusal(dead.error_text):
+                # A capacity / hard refusal: remember it so the card is moved to
+                # the next free lane once this reclaim txn has committed.
+                sweep.lane_cycles.append((row["id"], row["provider_override"], dead))
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1343,6 +1365,18 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    # Free-lane cycle: a worker that died on a capacity / hard refusal moves its
+    # card to the NEXT free lane (never the one that just refused). Recorded on
+    # the card as provider_refused / provider_cycled / provider_exhausted events.
+    cycles: list[tuple[str, str, str]] = []
+    for task_id, provider, dead in sweep.lane_cycles:
+        nxt = maybe_cycle_free_lane(
+            conn, task_id, current_provider=provider, error_text=dead.error_text,
+            rate_limited=dead.rate_limited,
+        )
+        if nxt is not None:
+            cycles.append((task_id, provider, nxt[0]))
+    detect_crashed_workers._last_lane_cycles = cycles  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -2055,6 +2089,27 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _refuse_card_without_model(conn, row, result, *, dry_run: bool) -> bool:
+    """Record (and return True) when a ready/review card states no model.
+
+    A card with no ``model_override`` resolves at spawn time to its assignee
+    profile's default route — the paid ``gpt-6-luna`` / ``openai-codex`` lane on
+    this host — with nothing on the board saying so. Refuse the spawn instead of
+    silently falling back to it; the card stays ``ready`` and dispatches once a
+    model is stated on it (``kanban create/edit --model``).
+    """
+    if (row["model_override"] or "").strip():
+        return False
+    result.skipped_no_model.append(row["id"])
+    if not dry_run:
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, row["id"], "skipped_no_model", {
+                "reason": "no model stated; refusing the profile-default (paid) fallback",
+                "assignee": row["assignee"] or "",
+            })
+    return True
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2246,6 +2301,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.lane_cycles.extend(getattr(detect_crashed_workers, "_last_lane_cycles", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
@@ -2318,7 +2374,8 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ceiling before spawning; it is the same value the replenisher uses to pick a lane.
     """
     return conn.execute(
-        "SELECT id, assignee, COALESCE(provider_override, '') AS provider_override "
+        "SELECT id, assignee, COALESCE(provider_override, '') AS provider_override, "
+        "COALESCE(model_override, '') AS model_override "
         "FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
@@ -2465,6 +2522,8 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
+        if _refuse_card_without_model(conn, row, result, dry_run=dry_run):
+            continue
         row_lane = (row["provider_override"] or "").strip()
         has_room, lane_now, lane_cap = _lane_has_room(row_lane, lane_caps, lane_running)
         if not has_room:
@@ -2483,6 +2542,8 @@ def _dispatch_once_locked(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if _refuse_card_without_model(conn, row, result, dry_run=dry_run):
             continue
         row_lane = (row["provider_override"] or "").strip()
         has_room, lane_now, lane_cap = _lane_has_room(row_lane, lane_caps, lane_running)
@@ -3000,6 +3061,147 @@ def run_daemon(
             import traceback
             traceback.print_exc()
         stop_event.wait(timeout=interval)
+
+
+# --- Free-lane cycle -------------------------------------------------------
+#
+# Measured 2026-11-14: the free lanes (nous / openrouter / gemini) all answer
+# HTTP 200 at concurrency 1 AND 3, and a 429 carries "This is not your API key's
+# rate limit" — a transient per-model upstream capacity wall, not an allowance
+# wall and not a concurrency>2 wall. The stall was the dispatcher requeueing the
+# SAME lane after that transient refusal (8 backoff steps against one provider).
+# So on a refusal we move the card to the NEXT free lane and only report
+# exhaustion after the whole list has been tried.
+
+#: Per-provider concurrency ceiling for the free-lane cycle. The operator's
+#: constraint is generous free volume PROVIDED concurrency stays <= 2 per
+#: provider; the cycle never raises a lane above this.
+FREE_LANE_MAX_CONCURRENCY = 2
+
+#: Ordered ``(provider, model)`` free lanes the dispatcher may cycle through.
+#: Overridable with ``HERMES_KANBAN_FREE_LANES`` (JSON list of
+#: ``{"provider": ..., "model": ...}`` or ``[provider, model]`` pairs).
+DEFAULT_FREE_LANE_CYCLE: tuple[tuple[str, str], ...] = (
+    ("nous", "meituan/longcat-2.5:free"),
+    ("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+    ("gemini", "gemini-3.1-flash-lite"),
+)
+
+_LANE_REFUSAL_RE = re.compile(
+    r"\b429\b|temporarily at capacity|at capacity upstream|"
+    r"rate[\s_\-]?limit|quota|missing (?:user )?tags?",
+    re.IGNORECASE,
+)
+
+
+def free_lane_cycle() -> tuple[tuple[str, str], ...]:
+    """The ordered free ``(provider, model)`` lanes to cycle through."""
+    raw = (os.environ.get("HERMES_KANBAN_FREE_LANES") or "").strip()
+    if not raw:
+        return DEFAULT_FREE_LANE_CYCLE
+    try:
+        import json as _json
+        data = _json.loads(raw)
+    except Exception:
+        return DEFAULT_FREE_LANE_CYCLE
+    out: list[tuple[str, str]] = []
+    for item in data if isinstance(data, list) else []:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            provider, model = str(item[0]).strip(), str(item[1]).strip()
+        elif isinstance(item, dict):
+            provider = str(item.get("provider") or "").strip()
+            model = str(item.get("model") or "").strip()
+        else:
+            continue
+        if provider and model:
+            out.append((provider, model))
+    return tuple(out) or DEFAULT_FREE_LANE_CYCLE
+
+
+def is_lane_refusal(error_text: str) -> bool:
+    """True when an error string is a provider capacity / hard-refusal wall.
+
+    Matches the upstream 429 capacity message, quota/rate-limit walls, and the
+    Nous ``missing tags`` hard refusal. A bare HTTP 400 is deliberately NOT
+    matched: most 400s are caller bugs, not a reason to change lane.
+    """
+    return bool(_LANE_REFUSAL_RE.search(error_text or ""))
+
+
+def _tried_providers(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    """Providers already recorded as refused for this card (durable board events)."""
+    tried: set[str] = set()
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'provider_refused' "
+            "ORDER BY id", (task_id,),
+        ).fetchall()
+    except Exception:
+        return tried
+    for row in rows:
+        data = _kb._json_dict(row[0]) if row[0] else {}
+        provider = str(data.get("provider") or "").strip()
+        if provider:
+            tried.add(provider)
+    return tried
+
+
+def _next_free_lane(conn: sqlite3.Connection, current_provider: str, tried: set[str]):
+    """The next free lane with headroom, or ``None`` when the list is exhausted.
+
+    Skips the lane that just refused, every lane already tried, any lane the
+    operator disabled (cap 0 in ``state/kanban_lane_caps.json``), and any lane
+    already at :data:`FREE_LANE_MAX_CONCURRENCY` running workers.
+    """
+    running = _lane_running_counts(conn)
+    caps = _lane_caps()
+    for provider, model in free_lane_cycle():
+        provider = provider.strip()
+        if not provider or provider == current_provider or provider in tried:
+            continue
+        cap = caps.get(provider)
+        if cap is not None and cap <= 0:
+            continue
+        if running.get(provider, 0) >= FREE_LANE_MAX_CONCURRENCY:
+            continue
+        return (provider, model)
+    return None
+
+
+def maybe_cycle_free_lane(conn, task_id, *, current_provider, error_text, rate_limited=False):
+    """Move a refused card to the next free lane; record the refusal.
+
+    Returns the chosen ``(provider, model)``, or ``None`` when the error is not
+    a lane refusal or the whole free list is exhausted. The refusal is recorded
+    as a ``provider_refused`` board event (so the lane is never re-run) and the
+    move as a ``provider_cycled`` event; exhaustion is recorded as
+    ``provider_exhausted``.
+    """
+    if not (bool(rate_limited) or is_lane_refusal(error_text)):
+        return None
+    current = (current_provider or "").strip()
+    tried = _tried_providers(conn, task_id)
+    if current:
+        tried.add(current)
+    nxt = _next_free_lane(conn, current, tried)
+    with _kb.write_txn(conn):
+        if current:
+            _kb._append_event(conn, task_id, "provider_refused", {
+                "provider": current, "error": (error_text or "")[:200],
+            })
+        if nxt is None:
+            _kb._append_event(conn, task_id, "provider_exhausted", {
+                "tried": sorted(tried), "error": (error_text or "")[:200],
+            })
+            return None
+        conn.execute(
+            "UPDATE tasks SET provider_override = ?, model_override = ? WHERE id = ?",
+            (nxt[0], nxt[1], task_id),
+        )
+        _kb._append_event(conn, task_id, "provider_cycled", {
+            "from": current, "to": nxt[0], "model": nxt[1], "error": (error_text or "")[:200],
+        })
+    return nxt
 
 
 def _lane_caps() -> dict[str, int]:
