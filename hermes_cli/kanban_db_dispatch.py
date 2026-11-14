@@ -524,21 +524,22 @@ def run_scoped_worker_pids(conn: sqlite3.Connection, task_id: str, run_id: int) 
     if stored and stored[0]:
         out.append((int(stored[0]), stored[1]))
     for kind in ("worker_bound", "spawned"):
-        event = conn.execute(
-            "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? AND kind = ? "
-            "ORDER BY id DESC LIMIT 1",
+        # EVERY event of this kind, not the latest one: a run that rebound more than once has earlier pids
+        # that were real, may still be alive, and are invisible to a LIMIT 1 selection - the reaper would
+        # then clear the run's evidence with a worker still running.
+        events = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? AND kind = ? ORDER BY id",
             (task_id, int(run_id), kind),
-        ).fetchone()
-        if not event:
-            continue
-        try:
-            payload = json.loads(event[0])
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(payload, dict) or not payload.get("pid"):
-            continue
-        out.append((int(payload["pid"]),
-                    payload.get("started_at") or payload.get("birth") or UNVERIFIED_WORKER_FINGERPRINT))
+        ).fetchall()
+        for event in events:
+            try:
+                payload = json.loads(event[0])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or not payload.get("pid"):
+                continue
+            out.append((int(payload["pid"]),
+                        payload.get("started_at") or payload.get("birth") or UNVERIFIED_WORKER_FINGERPRINT))
     ordered, seen = [], set()
     for pid, fingerprint in out:
         if pid in seen:

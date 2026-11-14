@@ -136,3 +136,59 @@ def test_t8f_foreign_host_row_is_untouched(board):
     dispatch._reap_terminal_worker_row(board, _row(board), HOST, None, [])
     assert _state["terminations"] == []
     assert board.execute("SELECT worker_pid FROM task_runs WHERE id=?", (RUN,)).fetchone()[0] == 100
+
+
+def _add_bound(conn, pid, lock, run_id=RUN):
+    """A binding WITH a spawn fingerprint, as a real bind records one.
+
+    A binding without one is treated as UNVERIFIED (never signalled, evidence held) - correct, but it would
+    make these tests pass for the wrong reason.
+    """
+    conn.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?,?,?,?,?)",
+        (TASK, run_id, "worker_bound",
+         json.dumps({"pid": pid, "claim_lock": lock, "started_at": f"fp-{pid}"}), 0),
+    )
+    conn.commit()
+
+
+def test_t11_all_historical_bindings_of_one_kind_are_selected(board):
+    """REVIEWER-3 blocker: a run that rebound twice has TWO worker_bound events; both pids are real."""
+    _add_bound(board, 201, HOST + "1b")
+    _add_bound(board, 202, HOST + "1c")
+    pids = [pid for pid, _ in dispatch.run_scoped_worker_pids(board, TASK, RUN)]
+    assert 201 in pids and 202 in pids, f"earlier bindings of the same kind must not be dropped, got {pids}"
+    assert pids.count(201) == 1 and pids.count(202) == 1, "deduplicate by pid"
+    assert 909 not in pids
+
+
+def test_t11b_reap_terminates_every_historical_binding(board):
+    _add_bound(board, 201, HOST + "1b")
+    _add_bound(board, 202, HOST + "1c")
+    _state["alive"] = {100, 201, 202}
+    reaped = []
+    dispatch._reap_terminal_worker_row(board, _row(board), HOST, None, reaped)
+    assert sorted(_state["terminations"]) == [100, 201, 202]
+    assert reaped == [TASK]
+    assert board.execute("SELECT worker_pid FROM task_runs WHERE id=?", (RUN,)).fetchone()[0] is None
+
+
+def test_t11c_one_unresolved_historical_binding_preserves_the_evidence(board):
+    """The omission the reviewer found: pid 202 stays alive, so the run row must keep its pid."""
+    _add_bound(board, 201, HOST + "1b")
+    _add_bound(board, 202, HOST + "1c")
+    _state["alive"] = {100, 201, 202}
+    real_terminate = dispatch._terminate_reclaimed_worker
+    def partial(pid, lock, signal_fn=None, started_at=None):
+        _state["terminations"].append(pid)
+        return {"prev_pid": pid, "terminated": pid != 202, "termination_attempted": True,
+                "sigkill": False, "host_local": True}
+    dispatch._terminate_reclaimed_worker = partial
+    try:
+        dispatch._reap_terminal_worker_row(board, _row(board), HOST, None, [])
+    finally:
+        dispatch._terminate_reclaimed_worker = real_terminate
+    assert 202 in _state["terminations"], "every selected pid is signalled"
+    assert board.execute("SELECT worker_pid FROM task_runs WHERE id=?", (RUN,)).fetchone()[0] == 100, (
+        "an omitted or unresolved worker must keep the run evidence; clearing here is the blocker"
+    )
