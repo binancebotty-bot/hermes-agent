@@ -235,3 +235,87 @@ def test_non_refusal_crash_does_not_cycle(free_lane_home):
     assert provider == "nous"
     with kbc.connect_closing() as conn:
         assert _events(conn, tid, "provider_cycled") == []
+
+
+# ---------------------------------------------------------------------------
+# 3. board feedback: a recorded refusal steers the NEXT card off the lane
+# ---------------------------------------------------------------------------
+
+
+def test_recorded_refusal_steers_the_next_card_off_the_hot_lane(free_lane_home):
+    """Card A's rate-limit refusal on nous must steer card B (the next card
+    dispatched onto nous) to a different provider, with no human reading it."""
+    kb = free_lane_home
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        a = kb.create_task(conn, title="a", assignee="alpha",
+                           model_override="meituan/longcat-2.5:free", provider_override="nous")
+        b = kb.create_task(conn, title="b", assignee="alpha",
+                           model_override="meituan/longcat-2.5:free", provider_override="nous")
+    with kbc.connect_closing() as conn:
+        _dead_rate_limited_run(kb, conn, kbd, a)
+        kbd.detect_crashed_workers(conn)
+        hot = kbd.hot_free_providers(conn)
+        print("DEMO hot lanes after card A refusal: %s" % sorted(hot))
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn, dry_run=False)
+        row_b = conn.execute(
+            "SELECT provider_override, model_override FROM tasks WHERE id=?", (b,)).fetchone()
+        provider, model = row_b[0], row_b[1]
+        print("DEMO dispatch decisions changed by the recorded 429: %s" % (res.lane_cycles,))
+        print("DEMO card B lane after dispatch: %s / %s" % (provider, model))
+    assert "nous" in hot, "the recorded refusal must make nous hot"
+    assert (b, "nous", "openrouter") in res.lane_cycles, res.lane_cycles
+    assert provider == "openrouter", "expected nous->openrouter steer, got %s" % provider
+    assert model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+# ---------------------------------------------------------------------------
+# 4. a deadline is a RETURN: receipt + different-lane retry + worker signalled
+# ---------------------------------------------------------------------------
+
+
+def test_deadline_receipt_returns_lane_and_retries_elsewhere(free_lane_home, tmp_path):
+    """A deadline records a receipt on the card/run, signals the worker pid and
+    retries a free-lane card on a DIFFERENT provider."""
+    import time as _time
+    kb = free_lane_home
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "partial.txt").write_text("partial")
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="deadline", assignee="alpha",
+                             model_override="meituan/longcat-2.5:free", provider_override="nous",
+                             max_runtime_seconds=1)
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=host + ":wd")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=?, worker_started_at=?, workspace_path=? WHERE id=?",
+            (999999, int(_time.time()) - 30, str(ws), tid),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at=? WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+            (int(_time.time()) - 30, tid),
+        )
+        conn.commit()
+        signalled = []
+        timed = kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: signalled.append((pid, sig)))
+        row = conn.execute(
+            "SELECT provider_override, model_override FROM tasks WHERE id=?", (tid,)).fetchone()
+        provider, model = row[0], row[1]
+        receipts = _events(conn, tid, "deadline_receipt")
+        timedout = _events(conn, tid, "timed_out")
+        print("DEMO deadline receipt: %s" % (receipts[-1] if receipts else None))
+        print("DEMO worker signalled: %s ; card now on %s / %s" % (signalled, provider, model))
+    assert tid in timed
+    assert signalled, "the worker pid must be signalled as part of the deadline"
+    assert provider == "openrouter", "deadline must retry on a different lane, got %s" % provider
+    assert model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert timedout and '"provider": "nous"' in timedout[-1]
+    assert receipts, "a deadline_receipt must be recorded on the card"
+    assert '"lane": "nous"' in receipts[-1]
+    assert '"partial_artifacts": ["partial.txt"]' in receipts[-1]

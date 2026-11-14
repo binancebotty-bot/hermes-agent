@@ -675,7 +675,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, "
+        "       COALESCE(t.provider_override, '') AS provider_override, "
+        "       COALESCE(t.model_override, '') AS model_override, "
+        "       t.workspace_path, t.max_retries, t.consecutive_failures "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -740,12 +743,30 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "limit_seconds": limit,
                     "sigkill": killed,
                     "retry_status": retry_status,
+                    "provider": (row["provider_override"] or "").strip(),
+                    "model": (row["model_override"] or "").strip(),
+                    "retry_budget": _kb._row_get(row, "max_retries"),
+                    "consecutive_failures": _kb._row_get(row, "consecutive_failures"),
+                    "last_provider_outcome": _last_provider_outcome(conn, tid),
+                    "partial_artifacts": _partial_artifacts(row["workspace_path"]),
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
                     error=error, metadata=payload,
                 )
                 _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
+                # A deadline is a RETURN, not just a kill: hand the originator
+                # the receipt (card, elapsed, limit, lane, model, last provider
+                # outcome, partial artefacts, retry budget).
+                _kb._append_event(conn, tid, "deadline_receipt", {
+                    "card": tid, "run_id": run_id,
+                    "elapsed_seconds": int(elapsed), "limit_seconds": limit,
+                    "lane": payload["provider"], "model": payload["model"],
+                    "last_provider_outcome": payload["last_provider_outcome"],
+                    "partial_artifacts": payload["partial_artifacts"],
+                    "retry_budget": payload["retry_budget"],
+                    "consecutive_failures": payload["consecutive_failures"],
+                }, run_id=run_id)
                 timed_out.append(tid)
         # Outside the write_txn above because ``_record_task_failure`` opens its
         # own. If the breaker trips this flips the task to ``blocked`` and emits
@@ -759,6 +780,13 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
             )
+            # Retry only onto a DIFFERENT free lane, never the one that failed.
+            provider = (row["provider_override"] or "").strip()
+            if provider in free_lane_providers():
+                maybe_cycle_free_lane(
+                    conn, tid, current_provider=provider,
+                    error_text="deadline exceeded", force=True,
+                )
     return timed_out
 
 
@@ -2508,6 +2536,7 @@ def _dispatch_once_locked(
     # tick cannot put more workers on a lane than its cap allows.
     lane_caps = _lane_caps()
     lane_running = _lane_running_counts(conn) if lane_caps else {}
+    hot = hot_free_providers(conn)
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
@@ -2524,7 +2553,11 @@ def _dispatch_once_locked(
             result.auto_assigned_default.append(row["id"])
         if _refuse_card_without_model(conn, row, result, dry_run=dry_run):
             continue
+        steered = steer_hot_free_lane(conn, row["id"], hot=hot, dry_run=dry_run)
         row_lane = (row["provider_override"] or "").strip()
+        if steered is not None:
+            result.lane_cycles.append((row["id"], row_lane, steered[0]))
+            row_lane = steered[0]
         has_room, lane_now, lane_cap = _lane_has_room(row_lane, lane_caps, lane_running)
         if not has_room:
             result.skipped_lane_capped.append((row["id"], row_lane, lane_now, lane_cap))
@@ -2545,7 +2578,11 @@ def _dispatch_once_locked(
             continue
         if _refuse_card_without_model(conn, row, result, dry_run=dry_run):
             continue
+        steered = steer_hot_free_lane(conn, row["id"], hot=hot, dry_run=dry_run)
         row_lane = (row["provider_override"] or "").strip()
+        if steered is not None:
+            result.lane_cycles.append((row["id"], row_lane, steered[0]))
+            row_lane = steered[0]
         has_room, lane_now, lane_cap = _lane_has_room(row_lane, lane_caps, lane_running)
         if not has_room:
             result.skipped_lane_capped.append((row["id"], row_lane, lane_now, lane_cap))
@@ -3146,18 +3183,21 @@ def _tried_providers(conn: sqlite3.Connection, task_id: str) -> set[str]:
     return tried
 
 
-def _next_free_lane(conn: sqlite3.Connection, current_provider: str, tried: set[str]):
+def _next_free_lane(conn: sqlite3.Connection, current_provider: str, tried: set[str],
+                    extra_hot: Optional[set[str]] = None):
     """The next free lane with headroom, or ``None`` when the list is exhausted.
 
     Skips the lane that just refused, every lane already tried, any lane the
-    operator disabled (cap 0 in ``state/kanban_lane_caps.json``), and any lane
-    already at :data:`FREE_LANE_MAX_CONCURRENCY` running workers.
+    operator disabled (cap 0 in ``state/kanban_lane_caps.json``), any lane
+    already at :data:`FREE_LANE_MAX_CONCURRENCY` running workers, and any lane
+    the board has recorded a recent refusal for (``extra_hot``).
     """
     running = _lane_running_counts(conn)
     caps = _lane_caps()
+    hot = extra_hot or set()
     for provider, model in free_lane_cycle():
         provider = provider.strip()
-        if not provider or provider == current_provider or provider in tried:
+        if not provider or provider == current_provider or provider in tried or provider in hot:
             continue
         cap = caps.get(provider)
         if cap is not None and cap <= 0:
@@ -3168,7 +3208,8 @@ def _next_free_lane(conn: sqlite3.Connection, current_provider: str, tried: set[
     return None
 
 
-def maybe_cycle_free_lane(conn, task_id, *, current_provider, error_text, rate_limited=False):
+def maybe_cycle_free_lane(conn, task_id, *, current_provider, error_text, rate_limited=False,
+                          force=False):
     """Move a refused card to the next free lane; record the refusal.
 
     Returns the chosen ``(provider, model)``, or ``None`` when the error is not
@@ -3177,13 +3218,13 @@ def maybe_cycle_free_lane(conn, task_id, *, current_provider, error_text, rate_l
     move as a ``provider_cycled`` event; exhaustion is recorded as
     ``provider_exhausted``.
     """
-    if not (bool(rate_limited) or is_lane_refusal(error_text)):
+    if not (force or bool(rate_limited) or is_lane_refusal(error_text)):
         return None
     current = (current_provider or "").strip()
     tried = _tried_providers(conn, task_id)
     if current:
         tried.add(current)
-    nxt = _next_free_lane(conn, current, tried)
+    nxt = _next_free_lane(conn, current, tried, extra_hot=hot_free_providers(conn))
     with _kb.write_txn(conn):
         if current:
             _kb._append_event(conn, task_id, "provider_refused", {
@@ -3202,6 +3243,103 @@ def maybe_cycle_free_lane(conn, task_id, *, current_provider, error_text, rate_l
             "from": current, "to": nxt[0], "model": nxt[1], "error": (error_text or "")[:200],
         })
     return nxt
+
+
+def free_lane_providers() -> set[str]:
+    """The provider names in the free-lane cycle."""
+    return {p for p, _ in free_lane_cycle()}
+
+
+def hot_free_providers(conn: sqlite3.Connection, *, window_seconds: int = 600) -> dict[str, int]:
+    """Provider -> epoch of its most recent ``provider_refused`` board event.
+
+    This is the board's feedback channel: a refusal recorded on ANY card makes
+    its lane hot for ``window_seconds``, so the next dispatch decision for that
+    lane can see it without a human reading the board.
+    """
+    cutoff = int(time.time()) - int(window_seconds)
+    hot: dict[str, int] = {}
+    try:
+        rows = conn.execute(
+            "SELECT payload, created_at FROM task_events "
+            "WHERE kind = 'provider_refused' ORDER BY id DESC",
+        ).fetchall()
+    except Exception:
+        return hot
+    for row in rows:
+        ts = _kb._to_epoch(row["created_at"]) or 0
+        if ts < cutoff:
+            break
+        data = _kb._json_dict(row["payload"]) if row["payload"] else {}
+        provider = str(data.get("provider") or "").strip()
+        if provider:
+            hot[provider] = max(ts, hot.get(provider, 0))
+    return hot
+
+
+def steer_hot_free_lane(conn, task_id, *, hot, dry_run=False):
+    """Move a card off a free lane the board has recorded a refusal for.
+
+    Returns the chosen ``(provider, model)`` or ``None``. The move is recorded
+    as a ``lane_hot_steer`` event so the steering is auditable.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(provider_override, '') AS p, COALESCE(model_override, '') AS m "
+        "FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    current = (row["p"] or "").strip()
+    if current not in free_lane_providers() or current not in hot:
+        return None
+    tried = _tried_providers(conn, task_id)
+    tried.add(current)
+    nxt = _next_free_lane(conn, current, tried, extra_hot=set(hot))
+    if nxt is None:
+        return None
+    if not dry_run:
+        with _kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET provider_override = ?, model_override = ? WHERE id = ?",
+                (nxt[0], nxt[1], task_id),
+            )
+            _kb._append_event(conn, task_id, "lane_hot_steer", {
+                "from": current, "to": nxt[0], "model": nxt[1],
+                "hot": sorted(hot), "reason": "recorded provider refusal on this lane",
+            })
+    return nxt
+
+
+def _last_provider_outcome(conn, task_id):
+    """The most recent provider-ish event for a card, for the deadline receipt."""
+    kinds = ("provider_refused", "rate_limited", "timed_out", "crashed")
+    marks = ",".join("?" * len(kinds))
+    try:
+        row = conn.execute(
+            f"SELECT kind, payload, created_at FROM task_events "
+            f"WHERE task_id = ? AND kind IN ({marks}) ORDER BY id DESC LIMIT 1",
+            (task_id, *kinds),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return {
+        "kind": row["kind"],
+        "at": row["created_at"],
+        "payload": _kb._json_dict(row["payload"]) if row["payload"] else {},
+    }
+
+
+def _partial_artifacts(workspace_path, *, limit: int = 20):
+    """Names of files the worker left in its workspace (bounded, names only)."""
+    if not workspace_path:
+        return []
+    try:
+        entries = sorted(os.listdir(workspace_path))
+    except Exception:
+        return []
+    return entries[:limit]
 
 
 def _lane_caps() -> dict[str, int]:

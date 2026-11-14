@@ -463,7 +463,27 @@ def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
     span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
-    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+    msg = t("gateway.kanban.ping.timed_out", head=n.head, span=span)
+    # Append the deadline receipt (lane/model, elapsed, last provider outcome,
+    # partial artefacts, retry budget) so the originator learns WHAT happened,
+    # not just that the card timed out.
+    lane = str(_payload(ev, "provider") or "")
+    model = str(_payload(ev, "model") or "")
+    elapsed = _payload(ev, "elapsed_seconds")
+    outcome = _payload(ev, "last_provider_outcome") or {}
+    arts = _payload(ev, "partial_artifacts") or []
+    bits = []
+    if lane or model:
+        bits.append("lane=%s/%s" % (lane or "?", model or "?"))
+    if elapsed:
+        bits.append("elapsed=%ss" % elapsed)
+    if outcome:
+        bits.append("last=%s" % outcome.get("kind", "?"))
+    if arts:
+        bits.append("artifacts=%d" % len(arts))
+    if bits:
+        msg = "%s [%s]" % (msg, ", ".join(bits))
+    return msg, None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
