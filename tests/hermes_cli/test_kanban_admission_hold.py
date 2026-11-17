@@ -253,3 +253,21 @@ def test_promotion_is_blocked_at_its_own_boundary(kanban_home, all_assignees_spa
         status = _status(conn, child)
     assert promoted == 0, promoted
     assert status == "todo", status
+
+
+def test_direct_review_claim_is_refused_while_held(kanban_home, all_assignees_spawnable):
+    """Coverage gap named by the reviewer: the review lane has its own claim primitive, guarded in
+    production but not exercised here. review -> running must be refused under the hold, with no new run."""
+    sentinel = kanban_home / kbd.ADMISSION_HOLD_NAME
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="review me", assignee="default")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+        conn.commit()
+        runs_before = conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)).fetchone()[0]
+        sentinel.write_text("{}", encoding="utf-8")
+        claimed = kb.claim_review_task(conn, tid)
+        status = _status(conn, tid)
+        runs_after = conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)).fetchone()[0]
+    assert claimed is None, "a held board must not hand out a review claim"
+    assert status == "review", status
+    assert runs_after == runs_before, "a refused review claim must open no run"
