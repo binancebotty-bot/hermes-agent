@@ -290,13 +290,13 @@ def test_direct_review_claim_is_refused_while_held(kanban_home, all_assignees_sp
 # and a provider circuit that defers instead of retrying.
 # ---------------------------------------------------------------------------
 
-def _seed_rate_limit_run(conn, task_id, ts):
+def _seed_rate_limit_run(conn, task_id, ts, started=None):
     """One quota-wall run. Provider is NOT a run column in this schema - attribution is by card pin."""
     conn.execute(
         # status AND outcome: the respawn guard keys on outcome, the cooldown ladder counts status
         "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
         "VALUES (?, 'rate_limited', 'rate_limited', ?, ?)",
-        (task_id, ts, ts),
+        (task_id, ts if started is None else started, ts),
     )
 
 
@@ -384,3 +384,54 @@ def test_the_24_card_storm_is_bounded_by_the_ladder(kanban_home, all_assignees_s
     assert churn_7h < churn_7h_off, (churn_7h, churn_7h_off)
     # and the ladder must be materially quieter, not marginally
     assert churn_7h <= churn_7h_off / 4, (churn_7h, churn_7h_off)
+
+
+def test_circuit_counts_are_keyed_on_run_END_not_start(kanban_home, all_assignees_spawnable):
+    """THE DEFECT THE REVIEWER FOUND: a refusal is recorded when the run ENDS.
+
+    Eight workers that STARTED 16 minutes ago and were refused a minute ago must trip the circuit. Keying the
+    window on started_at missed them entirely, so an exhausted provider kept admitting new work."""
+    now = int(time.time())
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="slow refusals", assignee="default",
+                             model_override="m", provider_override="prov-slow")
+        for _ in range(kbd.PROVIDER_QUOTA_THRESHOLD):
+            _seed_rate_limit_run(conn, tid, now, started=now - 16 * 60)
+        conn.commit()
+        calls = []
+        res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (calls.append(1) or 4242))
+    assert calls == [], "long-running refusals must still trip the circuit"
+    assert tid in res.provider_exhausted, res.provider_exhausted
+
+
+def test_review_lane_is_gated_by_the_provider_circuit_too(kanban_home, all_assignees_spawnable):
+    """The circuit sits on the shared ready/review admission path, not the ready loop."""
+    now = int(time.time())
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="pinned review", assignee="default",
+                             model_override="m", provider_override="prov-rev")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+        for _ in range(kbd.PROVIDER_QUOTA_THRESHOLD):
+            _seed_rate_limit_run(conn, tid, now)
+        conn.commit()
+        calls = []
+        res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (calls.append(1) or 4242))
+        status = _status(conn, tid)
+    assert calls == [], "a pinned REVIEW card must not spawn while its provider is exhausted"
+    assert tid in res.provider_exhausted, res.provider_exhausted
+    assert status == "review", status
+
+
+def test_circuit_recovers_when_END_times_age_out(kanban_home, all_assignees_spawnable):
+    """No state to clear: rows whose END is outside the window stop counting."""
+    old = int(time.time()) - kbd._RATE_LIMIT_WINDOW_SECONDS - 600
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="aged end", assignee="default",
+                             model_override="m", provider_override="prov-c")
+        for _ in range(kbd.PROVIDER_QUOTA_THRESHOLD):
+            _seed_rate_limit_run(conn, tid, old, started=old - 30)
+        conn.commit()
+        calls = []
+        res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (calls.append(1) or 4242))
+    assert len(calls) == 1, calls
+    assert tid not in res.provider_exhausted

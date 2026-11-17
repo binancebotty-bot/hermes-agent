@@ -113,9 +113,13 @@ def _provider_quota_exhausted(conn, provider: str, *, now: int | None = None) ->
         return False
     now = int(now if now is not None else time.time())
     row = conn.execute(
+        # KEYED ON ended_at, NOT started_at: a quota wall is RECORDED when the run ends (kanban_db._end_run),
+        # so a worker that started 20 minutes ago and was refused now must count NOW. Keying on start
+        # dropped exactly the long-running refusals this circuit exists to catch (reviewer, 2026-11-17T2326Z).
         "SELECT COUNT(*) FROM task_runs r JOIN tasks t ON t.id = r.task_id "
-        "WHERE r.status = 'rate_limited' AND r.started_at >= ? AND t.provider_override = ?",
-        (now - PROVIDER_QUOTA_WINDOW_SECONDS, str(provider)),
+        "WHERE r.status = 'rate_limited' AND r.ended_at IS NOT NULL "
+        "AND r.ended_at >= ? AND r.ended_at <= ? AND t.provider_override = ?",
+        (now - PROVIDER_QUOTA_WINDOW_SECONDS, now, str(provider)),
     ).fetchone()
     return int((row[0] if row else 0) or 0) >= PROVIDER_QUOTA_THRESHOLD
 
@@ -150,7 +154,9 @@ def _rate_limit_cooldown_seconds(conn, task_id: str) -> int:
     """
     since = int(time.time()) - _RATE_LIMIT_WINDOW_SECONDS
     row = conn.execute(
-        "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'rate_limited' AND started_at >= ?",
+        # ended_at for the same reason as the provider circuit: the refusal timestamp is the run END.
+        "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'rate_limited' "
+        "AND ended_at IS NOT NULL AND ended_at >= ?",
         (task_id, since),
     ).fetchone()
     n = int((row[0] if row else 0) or 0)
@@ -1674,7 +1680,9 @@ def check_respawn_guard(
         # unset the env-configured cooldown above behaves exactly as before.
         _tiered = _rate_limit_cooldown_seconds(conn, task_id)
         if _tiered:
-            rl_cooldown = _tiered
+            # Never shorten an operator-configured longer cooldown: the ladder may raise the wait,
+            # not lower an explicit floor.
+            rl_cooldown = max(_tiered, rl_cooldown)
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
@@ -2155,6 +2163,13 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    # PROVIDER QUOTA CIRCUIT, on the SHARED ready/review admission path: a card pinned to a provider
+    # already over its quota line waits instead of spawning. Zero attempts, no rotation, no probe - the
+    # evidence is that provider own rate_limited rows, so no state and recovery as they age out.
+    _pinned = row["provider_override"] if "provider_override" in row.keys() else None
+    if _pinned and _provider_quota_exhausted(conn, _pinned):
+        result.provider_exhausted.append(task_id)
+        return False
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -2530,13 +2545,6 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
-        # PROVIDER QUOTA CIRCUIT: a card pinned to a provider that is already over its quota line waits
-        # instead of spawning. Zero attempts, no rotation, no probe - the evidence is the provider own
-        # rate_limited rows, so this needs no state and recovers as they age out.
-        _pinned = row["provider_override"] if "provider_override" in row.keys() else None
-        if _pinned and _provider_quota_exhausted(conn, _pinned):
-            result.provider_exhausted.append(row["id"])
-            continue
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 
