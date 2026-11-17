@@ -86,13 +86,6 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 
 
 ADMISSION_HOLD_NAME = "KANBAN_ADMISSION_HOLD"
-"""Sentinel file that pauses NEW admissions without touching anything already running.
-
-Why a file and not a status: the dispatcher's admission decision is made in one place (a tick), so a
-reversible marker that costs one `os.stat` is enough, it needs no schema, no restart and no process
-signal, and it is atomic to create or remove. It deliberately does NOT gate sends, cron or gateway
-turns - unlike the global ESTOP sentinel, which also holds the operator's own Desktop turns.
-"""
 
 _COOLDOWN_TIERS_ENV = "HERMES_KANBAN_COOLDOWN_TIERS"
 _RATE_LIMIT_WINDOW_SECONDS = 6 * 3600
@@ -100,23 +93,15 @@ _RATE_LIMIT_TIERS = ((8, 7200), (4, 1800), (1, 600))
 
 
 def admission_hold_path():
-    """Path of the admission-hold sentinel for this Hermes home."""
-    import os as _os
-    from pathlib import Path as _Path
-    home = _os.environ.get("HERMES_HOME") or str(_Path.home() / ".hermes")
-    return _Path(home) / ADMISSION_HOLD_NAME
+    """Path of the admission-hold sentinel (owned by kanban_db, next to the claim primitives)."""
+    from hermes_cli import kanban_db as _k
+    return _k.admission_hold_path()
 
 
 def admission_hold_active() -> bool:
-    """True when the operator (or a controller) has paused new admissions.
-
-    Fail-CLOSED on a positive signal only: a stat error counts as engaged, because the whole point of
-    the marker is that it is honoured when it exists. Deleting the file is the release.
-    """
-    try:
-        return admission_hold_path().exists()
-    except OSError:
-        return True
+    """True when new admissions are paused. Enforced per claim in kanban_db, mirrored here for the tick."""
+    from hermes_cli import kanban_db as _k
+    return _k.admission_hold_active()
 
 
 def _cooldown_tiers_enabled() -> bool:

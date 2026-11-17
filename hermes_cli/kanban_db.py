@@ -2045,6 +2045,11 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
     """
+    # THE ADMISSION BARRIER LIVES HERE, at the promotion boundary itself, because promotion has more than one
+    # caller: the dispatcher's reclaim phase, `hermes kanban list`, and any future reader that recomputes. A check
+    # at one call site cannot stop the others (reviewer, 2026-11-17T2235Z). Fail-closed, one stat, no schema.
+    if admission_hold_active():
+        return 0
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
@@ -2168,6 +2173,32 @@ def _claim_and_open_run(
     return run_id
 
 
+ADMISSION_HOLD_NAME = "KANBAN_ADMISSION_HOLD"
+"""Sentinel that pauses NEW admissions without touching anything already running.
+
+Placed here, next to the claim primitives, because `claim_task` and `claim_review_task` are the ONLY atomic
+`-> running` transitions: a guard at this level is enforced for the dispatcher, the CLI, the dashboard and any
+future caller, and it is checked inside the claim transaction rather than at the start of a tick. A reversible
+file costs one `os.stat` and needs no schema, restart or signal. Deleting it resumes admission.
+"""
+
+
+def admission_hold_path():
+    """Path of the admission-hold sentinel for this Hermes home."""
+    import os as _os
+    from pathlib import Path as _Path
+    home = _os.environ.get("HERMES_HOME") or str(_Path.home() / ".hermes")
+    return _Path(home) / ADMISSION_HOLD_NAME
+
+
+def admission_hold_active() -> bool:
+    """True when new admissions are paused. Fail-CLOSED on a stat error (a marker exists to be honoured)."""
+    try:
+        return admission_hold_path().exists()
+    except OSError:
+        return True
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
@@ -2181,6 +2212,12 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        # ADMISSION HOLD: refuse the transition here, inside the claim transaction, so no path - dispatcher tick,
+        # `hermes kanban claim`, dashboard button - can admit work while the sentinel exists. Checked per claim, not
+        # per tick, which closes the race where a hold is engaged after a tick has already read the queue.
+        if admission_hold_active():
+            _append_event(conn, task_id, "claim_rejected", {"reason": "admission_hold"})
+            return None
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -2214,6 +2251,9 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if admission_hold_active():
+            _append_event(conn, task_id, "claim_rejected", {"reason": "admission_hold"})
+            return None
         if not _parents_satisfied(conn, task_id):
             demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "
