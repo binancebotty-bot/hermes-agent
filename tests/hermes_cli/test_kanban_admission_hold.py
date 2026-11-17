@@ -24,6 +24,15 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+@pytest.fixture(autouse=True)
+def _isolate_os_reaper(monkeypatch):
+    """The repo test suite leaks a `_FakePopen` into `subprocess.Popen`; the reclaim path then raises
+    AttributeError inside `reap_worker_zombies`. Admission never depends on OS zombie reaping, so it is
+    stubbed here for every test in this file - otherwise these tests fail for a reason that is not the gate.
+    """
+    monkeypatch.setattr(kbd, "reap_worker_zombies", list)
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
