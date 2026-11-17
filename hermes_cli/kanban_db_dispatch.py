@@ -85,6 +85,65 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+ADMISSION_HOLD_NAME = "KANBAN_ADMISSION_HOLD"
+"""Sentinel file that pauses NEW admissions without touching anything already running.
+
+Why a file and not a status: the dispatcher's admission decision is made in one place (a tick), so a
+reversible marker that costs one `os.stat` is enough, it needs no schema, no restart and no process
+signal, and it is atomic to create or remove. It deliberately does NOT gate sends, cron or gateway
+turns - unlike the global ESTOP sentinel, which also holds the operator's own Desktop turns.
+"""
+
+_COOLDOWN_TIERS_ENV = "HERMES_KANBAN_COOLDOWN_TIERS"
+_RATE_LIMIT_WINDOW_SECONDS = 6 * 3600
+_RATE_LIMIT_TIERS = ((8, 7200), (4, 1800), (1, 600))
+
+
+def admission_hold_path():
+    """Path of the admission-hold sentinel for this Hermes home."""
+    import os as _os
+    from pathlib import Path as _Path
+    home = _os.environ.get("HERMES_HOME") or str(_Path.home() / ".hermes")
+    return _Path(home) / ADMISSION_HOLD_NAME
+
+
+def admission_hold_active() -> bool:
+    """True when the operator (or a controller) has paused new admissions.
+
+    Fail-CLOSED on a positive signal only: a stat error counts as engaged, because the whole point of
+    the marker is that it is honoured when it exists. Deleting the file is the release.
+    """
+    try:
+        return admission_hold_path().exists()
+    except OSError:
+        return True
+
+
+def _cooldown_tiers_enabled() -> bool:
+    import os as _os
+    return str(_os.environ.get(_COOLDOWN_TIERS_ENV, "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _rate_limit_cooldown_seconds(conn, task_id: str) -> int:
+    """Stateless adaptive cooldown from this card's own recent quota-wall history.
+
+    n = rate_limited runs in the trailing window -> 600s (n 1-3), 1800s (4-7), 7200s (>=8).
+    Nothing is written: the window ages out on its own, so a card that recovers needs no reset and a
+    real success clears the ladder by making the old runs fall outside the window.
+    """
+    import time as _time
+    since = int(_time.time()) - _RATE_LIMIT_WINDOW_SECONDS
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'rate_limited' AND started_at >= ?",
+        (task_id, since),
+    ).fetchone()
+    n = int((row[0] if row else 0) or 0)
+    for threshold, seconds in _RATE_LIMIT_TIERS:
+        if n >= threshold:
+            return seconds
+    return 0
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -143,6 +202,8 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
     skipped_locked: bool = False
+    admission_held: bool = False
+    """True when the tick admitted nothing because the admission-hold sentinel exists."""
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
     memory_pressure: Optional[str] = None
@@ -1589,6 +1650,13 @@ def check_respawn_guard(
     #    condition is not the card's, so it retries forever, spaced, and never
     #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    if _cooldown_tiers_enabled():
+        # OPT-IN ADAPTIVE COOLDOWN: a card that keeps hitting the same quota wall waits longer each time,
+        # derived from its own run history so there is no state to reset. Off by default: with the flag
+        # unset the env-configured cooldown above behaves exactly as before.
+        _tiered = _rate_limit_cooldown_seconds(conn, task_id)
+        if _tiered:
+            rl_cooldown = _tiered
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
@@ -2377,6 +2445,12 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    if admission_hold_active():
+        # ADMISSION HOLD: the reclaim phase above still ran, so dead workers are cleaned up and running
+        # rows are untouched, but nothing new is promoted, claimed or spawned. Removing the sentinel
+        # resumes on the next tick; there is no other state to unwind.
+        result.admission_held = True
+        return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
