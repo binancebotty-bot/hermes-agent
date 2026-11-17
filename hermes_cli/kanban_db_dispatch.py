@@ -91,6 +91,33 @@ _COOLDOWN_TIERS_ENV = "HERMES_KANBAN_COOLDOWN_TIERS"
 _RATE_LIMIT_WINDOW_SECONDS = 6 * 3600
 _RATE_LIMIT_TIERS = ((8, 7200), (4, 1800), (1, 600))
 
+# Provider-level quota circuit. A rate-limited run carries the provider that refused it, so exhaustion can be
+# measured per provider instead of per card. When a provider is over the line we DEFER cards pinned to it with
+# ZERO spawns - we never rotate to another provider (that would be a routing decision requiring proven free
+# capacity and owner policy), and we never probe quota by spawning.
+PROVIDER_QUOTA_WINDOW_SECONDS = 900   # 15 minutes
+PROVIDER_QUOTA_THRESHOLD = 8             # rate-limited runs from one provider inside the window
+
+
+def _provider_quota_exhausted(conn, provider: str, *, now: int | None = None) -> bool:
+    """True when the cards PINNED to `provider` have produced >= threshold quota walls in the window.
+
+    Attribution is by pin, not by run: this schema's `task_runs` has no provider column, so a run cannot say
+    which provider refused it. The pin on the card is the honest available signal, and the limitation is real -
+    a card whose pin CHANGED borrows its history to the new provider. Stated, not hidden.
+
+    Stateless on purpose: the evidence is durable rows, so it survives restart, carries no clock of its own,
+    and recovers as they age out. No probe, no spawn, no state file.
+    """
+    if not provider:
+        return False
+    now = int(now if now is not None else time.time())
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.status = 'rate_limited' AND r.started_at >= ? AND t.provider_override = ?",
+        (now - PROVIDER_QUOTA_WINDOW_SECONDS, str(provider)),
+    ).fetchone()
+    return int((row[0] if row else 0) or 0) >= PROVIDER_QUOTA_THRESHOLD
 
 def admission_hold_path():
     """Path of the admission-hold sentinel (owned by kanban_db, next to the claim primitives)."""
@@ -105,8 +132,13 @@ def admission_hold_active() -> bool:
 
 
 def _cooldown_tiers_enabled() -> bool:
+    """Adaptive cooldown is the SAFE DEFAULT; an explicit off-switch restores the flat value.
+
+    A fix that only works when someone remembers to set a flag is not a fix - the storm this addresses is
+    what happens when nobody is watching. `HERMES_KANBAN_COOLDOWN_TIERS=0|false|off|no` disables it.
+    """
     import os as _os
-    return str(_os.environ.get(_COOLDOWN_TIERS_ENV, "")).strip().lower() in ("1", "true", "yes", "on")
+    return str(_os.environ.get(_COOLDOWN_TIERS_ENV, "1")).strip().lower() not in ("0", "false", "off", "no")
 
 
 def _rate_limit_cooldown_seconds(conn, task_id: str) -> int:
@@ -116,8 +148,7 @@ def _rate_limit_cooldown_seconds(conn, task_id: str) -> int:
     Nothing is written: the window ages out on its own, so a card that recovers needs no reset and a
     real success clears the ladder by making the old runs fall outside the window.
     """
-    import time as _time
-    since = int(_time.time()) - _RATE_LIMIT_WINDOW_SECONDS
+    since = int(time.time()) - _RATE_LIMIT_WINDOW_SECONDS
     row = conn.execute(
         "SELECT COUNT(*) FROM task_runs WHERE task_id = ? AND status = 'rate_limited' AND started_at >= ?",
         (task_id, since),
@@ -188,6 +219,8 @@ class DispatchResult:
     a failure — a long quota window must never trip the circuit breaker."""
     skipped_locked: bool = False
     admission_held: bool = False
+    provider_exhausted: list[str] = field(default_factory=list)
+    """Cards deferred because their pinned provider is over the quota threshold (zero spawns)."""
     """True when the tick admitted nothing because the admission-hold sentinel exists."""
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -2349,7 +2382,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2497,6 +2530,13 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
+        # PROVIDER QUOTA CIRCUIT: a card pinned to a provider that is already over its quota line waits
+        # instead of spawning. Zero attempts, no rotation, no probe - the evidence is the provider own
+        # rate_limited rows, so this needs no state and recovers as they age out.
+        _pinned = row["provider_override"] if "provider_override" in row.keys() else None
+        if _pinned and _provider_quota_exhausted(conn, _pinned):
+            result.provider_exhausted.append(row["id"])
+            continue
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1
 

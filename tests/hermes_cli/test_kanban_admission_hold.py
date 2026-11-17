@@ -146,12 +146,13 @@ def test_cooldown_tiers_ignore_runs_outside_the_window(kanban_home):
         assert kbd._rate_limit_cooldown_seconds(conn, tid) == 0
 
 
-def test_cooldown_tiers_are_off_by_default(kanban_home, monkeypatch):
-    """Unset flag -> the env-configured cooldown governs, i.e. today's behaviour is preserved."""
+def test_cooldown_tiers_default_on_and_switchable(kanban_home, monkeypatch):
+    """P0-B phase 2 flipped the default: the ladder is the safe default and an explicit switch resumes
+    the old flat cooldown. A fix that hides behind an opt-in flag is not a fix."""
     monkeypatch.delenv(kbd._COOLDOWN_TIERS_ENV, raising=False)
-    assert kbd._cooldown_tiers_enabled() is False
-    monkeypatch.setenv(kbd._COOLDOWN_TIERS_ENV, "1")
     assert kbd._cooldown_tiers_enabled() is True
+    monkeypatch.setenv(kbd._COOLDOWN_TIERS_ENV, "0")
+    assert kbd._cooldown_tiers_enabled() is False
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +281,106 @@ def test_direct_review_claim_is_refused_while_held(kanban_home, all_assignees_sp
     assert claimed is None, "a held board must not hand out a review claim"
     assert status == "review", status
     assert runs_after == runs_before, "a refused review claim must open no run"
+
+
+# ---------------------------------------------------------------------------
+# P0-B PHASE 2 (operator-authorised, 2026-11-17T2307Z): the 429 spawn storm.
+# The admission gate stops NEW work on command. This phase bounds the retry churn
+# of work a provider is already refusing: a per-card ladder that is ON by default,
+# and a provider circuit that defers instead of retrying.
+# ---------------------------------------------------------------------------
+
+def _seed_rate_limit_run(conn, task_id, ts):
+    """One quota-wall run. Provider is NOT a run column in this schema - attribution is by card pin."""
+    conn.execute(
+        # status AND outcome: the respawn guard keys on outcome, the cooldown ladder counts status
+        "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+        "VALUES (?, 'rate_limited', 'rate_limited', ?, ?)",
+        (task_id, ts, ts),
+    )
+
+
+class _Clock:
+    """Deterministic clock: the storm simulation must not depend on wall time."""
+
+    def __init__(self, start):
+        self.now = int(start)
+
+    def time(self):
+        return self.now
+
+
+def test_adaptive_cooldown_is_the_default_not_an_inert_flag(kanban_home, monkeypatch):
+    """A fix that only works when someone remembers a flag is not a fix."""
+    monkeypatch.delenv(kbd._COOLDOWN_TIERS_ENV, raising=False)
+    assert kbd._cooldown_tiers_enabled() is True
+    monkeypatch.setenv(kbd._COOLDOWN_TIERS_ENV, "0")
+    assert kbd._cooldown_tiers_enabled() is False
+
+
+def test_provider_circuit_defers_a_pinned_card_with_zero_spawns(kanban_home, all_assignees_spawnable):
+    """Eight quota walls from one provider in the window: its card waits, nothing spawns."""
+    now = int(time.time())
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="pinned", assignee="default", model_override="test-model", provider_override="prov-a")
+        for _ in range(kbd.PROVIDER_QUOTA_THRESHOLD):
+            _seed_rate_limit_run(conn, tid, now)
+        conn.commit()
+        calls = []
+        res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (calls.append(1) or 4242))
+        status = _status(conn, tid)
+    assert calls == [], calls
+    assert tid in res.provider_exhausted, res.provider_exhausted
+    assert status == "ready", status
+
+
+def test_provider_circuit_recovers_once_the_window_ages(kanban_home, all_assignees_spawnable):
+    """No state to clear: the same rows stop counting when they age out."""
+    # past BOTH windows: the 15-minute provider circuit and the 6-hour ladder. A younger run would still be
+    # legitimately cooling down, which is the fix working, not failing.
+    old = int(time.time()) - kbd._RATE_LIMIT_WINDOW_SECONDS - 600
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="recovered", assignee="default", model_override="test-model", provider_override="prov-b")
+        for _ in range(kbd.PROVIDER_QUOTA_THRESHOLD):
+            _seed_rate_limit_run(conn, tid, old)
+        conn.commit()
+        calls = []
+        res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (calls.append(1) or 4242))
+    assert len(calls) == 1, calls
+    assert tid not in res.provider_exhausted
+
+
+def test_the_24_card_storm_is_bounded_by_the_ladder(kanban_home, all_assignees_spawnable, monkeypatch):
+    """Deterministic simulation: 24 cards all refused with 429, compared with the ladder off.
+
+    Every attempt inserts a rate_limited run, exactly as a worker exit 75 does, and the guard is asked
+    again on the next tick. The count of attempts IS the churn under test.
+    """
+    start = 1_700_000_000
+
+    def _run(tiers_on, ticks, tick_seconds):
+        monkeypatch.setenv(kbd._COOLDOWN_TIERS_ENV, "1" if tiers_on else "0")
+        clock = _Clock(start)
+        monkeypatch.setattr(kbd, "time", clock)
+        with kbc.connect() as conn:
+            ids = [kb.create_task(conn, title=f"storm {i}", assignee="default", model_override="test-model", provider_override=f"p{i % 4}")
+                   for i in range(24)]
+            attempts = 0
+            for _ in range(ticks):
+                clock.now += tick_seconds
+                for tid in ids:
+                    if kbd.check_respawn_guard(conn, tid) is None:
+                        attempts += 1
+                        _seed_rate_limit_run(conn, tid, clock.now)
+                conn.commit()
+        return attempts
+
+    churn_10min = _run(tiers_on=True, ticks=30, tick_seconds=20)      # 10 minutes
+    churn_10min_off = _run(tiers_on=False, ticks=30, tick_seconds=20)
+    churn_7h = _run(tiers_on=True, ticks=420, tick_seconds=60)        # 7 hours
+    churn_7h_off = _run(tiers_on=False, ticks=420, tick_seconds=60)
+
+    assert churn_10min < churn_10min_off, (churn_10min, churn_10min_off)
+    assert churn_7h < churn_7h_off, (churn_7h, churn_7h_off)
+    # and the ladder must be materially quieter, not marginally
+    assert churn_7h <= churn_7h_off / 4, (churn_7h, churn_7h_off)
