@@ -688,6 +688,113 @@ if AIOHTTP_AVAILABLE:
 else:
     cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
 
+
+def _bearer_token(request):
+    """Match the legacy case-sensitive Bearer parser, but reject ambiguous duplicates."""
+    headers = request.headers
+    getall = getattr(headers, "getall", None)
+    if getall is not None:
+        values = getall("Authorization", [])
+    else:
+        value = headers.get("Authorization")
+        values = [value] if value else []
+    if len(values) != 1:
+        return ""
+    value = values[0]
+    return value[7:].strip() if value.startswith("Bearer ") else ""
+
+
+def _scoped_audit(request, decision, reason=""):
+    """Record scoped grants/refusals; on route denies log path only, never queries or credentials."""
+    label = re.sub(r"[^A-Za-z0-9_-]", "_", str(request.get("scoped_key_label") or "-"))[:80]
+    session = request.match_info.get("session_id") or "-"
+    if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", session):
+        session = "-"
+    resource = getattr(getattr(request.match_info.route, "resource", None), "canonical", None)
+    route = resource if isinstance(resource, str) and re.fullmatch(r"/[A-Za-z0-9_{}./-]+", resource) else "-"
+    prefix = "scoped-key denied" if decision == "deny" else "scoped-key access"
+    suffix = " reason=" + reason if decision == "deny" else ""
+    if decision == "deny" and reason == "route":
+        # raw_path is URL-encoded PATH ONLY, not raw_path_qs (which includes secrets).
+        # Escape control/non-ASCII bytes to keep one bounded audit line.
+        raw_path = request.rel_url.raw_path.encode("unicode_escape").decode("ascii")[:512]
+        suffix += " raw_path=" + raw_path
+    if decision == "deny":
+        request["_scoped_audit_denied"] = True
+    (logger.warning if decision == "deny" else logger.info)(
+        "%s label=%s method=%s path=%s session=%s decision=%s%s",
+        prefix, label, request.method, route, session, decision, suffix)
+
+
+def _log_token(value: Any) -> str:
+    """One bounded log-safe field: ids and labels only, never a bearer or message text."""
+    token = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(value))[:128]
+    return token if token else "-"
+
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def scoped_key_guard_middleware(request, handler):
+        """Enforce the scoped-key allowlist on EVERY route, including the two
+        (platform callbacks, cron fire) that use their own verifier instead of
+        _check_auth. Master/unknown keys pass through untouched."""
+        adapter = request.app.get("api_server_adapter")
+        token = _bearer_token(request)
+        if adapter is not None and token and not secrets_match(token, adapter._api_key):
+            for label, key in adapter._extra_api_keys.items():
+                if secrets_match(token, key):
+                    request["scoped_key_label"] = label
+                    if not adapter._scoped_key_allows(request):
+                        _scoped_audit(request, "deny", "route")
+                        return adapter._scoped_key_denied_response()
+                    grant_error = await adapter._scoped_session_grant(request)
+                    if grant_error is not None:
+                        return grant_error
+                    try:
+                        return await handler(request)
+                    finally:
+                        # A late retry or resume-hop denial supersedes allow.
+                        if not request.get("_scoped_audit_denied"):
+                            _scoped_audit(request, "allow")
+        return await handler(request)
+else:
+    scoped_key_guard_middleware = None  # type: ignore
+
+
+# A chat:all caller (the Site's scoped key) is acked inside this bound: its message is already
+# committed, and a caller that budgeted 10s reports a delivered message as a failed request.
+_CHAT_ALL_ACK_BOUND_S = 6.0
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def session_access_log_middleware(request, handler):
+        """One line per chat/session request: what ran, how it ended, for whom — never the content.
+
+        Outermost so a refused or draining request is logged too; the label and delivery id it
+        reports are set downstream (the scoped guard and the chat:all route) while the handler runs.
+        """
+        if not request.path.startswith("/api/sessions"):
+            return await handler(request)
+        started = time.monotonic()
+        status = 500
+        try:
+            response = await handler(request)
+            status = response.status
+            return response
+        finally:
+            # Same trusted template the scoped audit reports (a router resource, never caller text).
+            resource = getattr(getattr(request.match_info.route, "resource", None), "canonical", None)
+            route = resource if isinstance(resource, str) and re.fullmatch(r"/[A-Za-z0-9_{}./-]+", resource) else "-"
+            logger.info(
+                "api access route=%s method=%s status=%s duration_ms=%d session=%s delivery=%s label=%s",
+                route, request.method, status,
+                int((time.monotonic() - started) * 1000),
+                _log_token(request.match_info.get("session_id") or "-"),
+                _log_token(request.get("delivery_id") or "-"),
+                _log_token(request.get("scoped_key_label") or "-"))
+else:
+    session_access_log_middleware = None  # type: ignore
+
 _MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                ".webp": "image/webp", ".bmp": "image/bmp"}
 _MEDIA_IMG_EXT = set(_MEDIA_MIME)
@@ -1056,6 +1163,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         extra = config.extra or {}
         self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
+        # Additive scoped keys for narrow integrations (label -> key). Empty => today's behavior.
+        self._extra_api_keys: dict[str, str] = self._parse_extra_api_keys(extra)
+        self._scoped_key_scopes = self._parse_scoped_key_scopes(extra, self._extra_api_keys)
+        for label, key in self._extra_api_keys.items():
+            if self._api_key and secrets_match(key, self._api_key):
+                # A colliding scoped credential would gain unrestricted master rights.
+                raise ValueError(f"Scoped API key label {label!r} matches master key")
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
         self._model_name: str = self._resolve_model_name(
@@ -1410,13 +1524,154 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                        "code": "gateway_auth_failed"}},
             status=401)
 
+    @staticmethod
+    def _scoped_key_denied_response() -> web.Response:
+        """403 with a distinct code: key is valid, route is out of scope."""
+        return web.json_response(
+            {"error": {"message": "Scoped API key not authorized for this endpoint",
+                       "type": "gateway_auth_error", "code": "gateway_scope_denied"}},
+            status=403)
+
+    @staticmethod
+    def _parse_extra_api_keys(extra: dict) -> dict[str, str]:
+        """Merge config ``extra_keys`` (label -> key) with API_SERVER_EXTRA_KEYS
+        (comma-separated ``label:key``). Empty/absent => no scoped keys."""
+        from hermes_cli.auth import has_usable_secret
+
+        keys: dict[str, str] = {}
+        configured = extra.get("extra_keys") or {}
+        if isinstance(configured, dict):
+            for label, key in configured.items():
+                label, key = str(label).strip(), str(key).strip() if isinstance(key, str) else ""
+                if label:
+                    if not has_usable_secret(key, min_length=16):
+                        raise ValueError(f"Unusable scoped API key in config for label {label!r}")
+                    keys[label] = key
+        for pos, entry in enumerate(os.getenv("API_SERVER_EXTRA_KEYS", "").split(","), 1):
+            entry = entry.strip()
+            if not entry:
+                continue  # absent env var splits to one blank entry; not a malformed key
+            label, sep, key = entry.partition(":")
+            label, key = label.strip(), key.strip()
+            if not sep or ":" in key or not label or not key:
+                # Fail closed on anything but exactly one ':' with a non-empty label
+                # and key. Log the position/label only, never the key text (a
+                # colon-less entry may itself be a bare key).
+                logger.warning(
+                    "Ignoring malformed API_SERVER_EXTRA_KEYS entry #%d%s: exactly one ':' "
+                    "with a non-empty label and key is required", pos,
+                    f" (label {label!r})" if sep else "")
+                continue
+            if not has_usable_secret(key, min_length=16):
+                raise ValueError(
+                    f"Unusable scoped API key in API_SERVER_EXTRA_KEYS env entry #{pos} for label {label!r}")
+            keys[label] = key
+        # Dedupe the effective config+env map by value, not only by label.
+        # Ambiguous principals must never depend on dictionary iteration order.
+        unique: dict[str, str] = {}
+        for label, key in keys.items():
+            if any(secrets_match(key, existing) for existing in unique.values()):
+                raise ValueError(f"Duplicate scoped API key value for label {label!r}")
+            unique[label] = key
+        return unique
+
+    @staticmethod
+    def _parse_scoped_key_scopes(extra: dict, scoped_keys: dict[str, str]) -> dict[str, frozenset[str]]:
+        """Explicit per-label scopes, separate from the secret; absent => pinned only.
+
+        API_SERVER_SCOPED_KEY_SCOPES is a JSON object e.g.
+        {"chatgpt-site":"chat:all"}. Invalid labels/scopes fail startup.
+        """
+        configured = extra.get("scoped_key_scopes") or {}
+        if not isinstance(configured, dict):
+            raise ValueError("scoped_key_scopes must map credential labels to scopes")
+        entries = dict(configured)
+        env = os.getenv("API_SERVER_SCOPED_KEY_SCOPES", "").strip()
+        if env:
+            try:
+                env_scopes = json.loads(env)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("API_SERVER_SCOPED_KEY_SCOPES requires JSON object") from exc
+            if not isinstance(env_scopes, dict):
+                raise ValueError("API_SERVER_SCOPED_KEY_SCOPES requires JSON object")
+            entries.update(env_scopes)
+        result = {}
+        for label, raw in entries.items():
+            if label not in scoped_keys:
+                raise ValueError(f"Scope configured for unrecognized key label {label!r}")
+            scopes = [raw] if isinstance(raw, str) else raw
+            if not isinstance(scopes, (list, tuple)) or any(
+                not isinstance(value, str) or value != "chat:all" for value in scopes
+            ):
+                raise ValueError(f"Unsupported scoped API capability for {label!r}")
+            result[label] = frozenset(scopes)
+        return result
+
+    def _scoped_chat_all(self, request: web.Request) -> bool:
+        label = request.get("scoped_key_label")
+        return bool(label and "chat:all" in self._scoped_key_scopes.get(label, ()))
+
+    # A scoped key is matched against the literal request path, so it is denied on
+    # profile-prefixed mirrors (/p/<profile>/...): enabling mirrors is a deliberate
+    # future decision, not an oversight.
+    # Scoped-key allowlist: exact (method, path); a {session_id} is one path segment.
+    _SCOPED_KEY_ROUTES = (
+        ("GET", re.compile(r"^/health$")),
+        ("GET", re.compile(r"^/api/sessions$")),
+        ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+$")),
+        ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/messages$")),
+        ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/chat$")),
+        ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/messages$")),
+        ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/send$")),
+    )
+
+    @classmethod
+    def _scoped_key_allows(cls, request: web.Request) -> bool:
+        path = request.path
+        return any(request.method == method and rx.match(path)
+                   for method, rx in cls._SCOPED_KEY_ROUTES)
+
+    @staticmethod
+    def _scoped_session_denied_response() -> web.Response:
+        return _error_response("Session is not granted to this key", 403,
+                               code="gateway_session_not_granted")
+
+    async def _scoped_session_grant(self, request: web.Request) -> Optional[web.Response]:
+        """Fresh DB pin lookup before any scoped session-specific HTTP handler executes."""
+        session_id = request.match_info.get("session_id")
+        if session_id is None:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
+            _scoped_audit(request, "deny", "malformed")
+            return self._scoped_key_denied_response()
+        db = await self._ensure_session_db_async()
+        if db is None:
+            _scoped_audit(request, "deny", "unknown_session")
+            return self._session_db_unavailable()
+        session = await asyncio.to_thread(db.get_session, session_id)
+        if session is None:
+            _scoped_audit(request, "deny", "unknown_session")
+            return _error_response("Session not found", 404, code="session_not_found")
+        # A chat:all label is an explicitly authorised user-equivalent chat surface.
+        # Other scoped credentials still require a fresh pinned-session grant.
+        if not self._scoped_chat_all(request) and session.get("pinned") != 1:
+            _scoped_audit(request, "deny", "unpinned")
+            return self._scoped_session_denied_response()
+        return None
+
     def _check_auth(self, request: web.Request) -> Optional[web.Response]:
-        """Validate the Bearer token; None when OK, else a 401. The no-key branch (connect()
-        refuses to start without API_SERVER_KEY) exists for tests/manual wiring on the default
-        listener only; named profiles fail closed rather than inherit the owner's key."""
+        """Validate the Bearer token; None when OK. A recognized scoped key passes
+        only on its allowlist; everywhere else it gets 403, unknown keys 401.
+        The no-key branch (connect() refuses to start without API_SERVER_KEY)
+        exists for tests/manual wiring on the default listener only; named
+        profiles fail closed rather than inherit the owner's key."""
         profile = _api_request_profile.get()
         expected_key = self._expected_api_key()
+        token = _bearer_token(request)
         if not expected_key:
+            # Preserve baseline's default-profile, no-master test contract.
+            # Live connect() refuses no-master startup, while the scoped-key
+            # middleware enforces scoped route and pin grants before this branch.
             if not (profile and profile != "default"):
                 return None
             logger.warning(
@@ -1424,11 +1679,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "API_SERVER_KEY is configured; %s",
                 profile, self._request_audit_log_suffix(request))
             return self._auth_failed_response()
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            if secrets_match(token, expected_key):
-                return None
+        if token and secrets_match(token, expected_key):
+            return None
+        for label, key in self._extra_api_keys.items():
+            if token and secrets_match(token, key):
+                if self._scoped_key_allows(request):
+                    request["scoped_key_label"] = label
+                    return None
+                logger.warning(
+                    "API server scoped key %r denied for %s %s: %s",
+                    label, request.method, request.path, self._request_audit_log_suffix(request))
+                return self._scoped_key_denied_response()
         logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
         return self._auth_failed_response()
 
@@ -1566,6 +1827,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
+            ("POST", "/api/sessions/{session_id}/messages", self._handle_session_chat),
+            ("POST", "/api/sessions/{session_id}/send", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
@@ -2541,8 +2804,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
 
-        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source))
-        if title_filter and not sessions:
+        scoped = bool(request.get("scoped_key_label"))
+        sessions = await _list()
+        if not sessions and not scoped:
+            sessions = await reset_local_title_owner(db, title_filter, include_hidden, source) or []
+        if title_filter and not sessions and not scoped:
             # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
             # mint transient sessions: resurrect and re-list; deliberate archives stay put.
             try:
@@ -2562,6 +2828,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     sessions = await _list()
             except Exception:
                 pass  # resolution degrades to today's no-row behavior
+        if request.get("scoped_key_label") and not self._scoped_chat_all(request):
+            # Unscoped labels retain their existing pinned-only read visibility.
+            sessions = [s for s in sessions if s.get("pinned") == 1]
         # Back-filled pins arrive PAST the limit: counting them would report a page that doesn't exist.
         windowed = sum(1 for s in sessions if not s.get("pinned"))
         return web.json_response({
@@ -2645,6 +2914,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
+        if request.get("scoped_key_label") and not self._scoped_chat_all(request) and session.get("pinned") != 1:
+            _scoped_audit(request, "deny", "unpinned")
+            return self._scoped_session_denied_response()
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     @_require_auth
@@ -2728,15 +3000,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_session_messages(self, request: web.Request) -> web.Response:
         """GET /api/sessions/{session_id}/messages."""
         session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
+        session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
+        if request.get("scoped_key_label") and not self._scoped_chat_all(request) and session.get("pinned") != 1:
+            _scoped_audit(request, "deny", "unpinned")
+            return self._scoped_session_denied_response()
         db = await self._ensure_session_db_async()
-        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        scoped = bool(request.get("scoped_key_label")) and not self._scoped_chat_all(request)
+        # Pinned-only scoped principals stay own-ID; chat:all has user-equivalent history.
+        resolved_id = (session_id if scoped else
+                       await asyncio.to_thread(db.resolve_resume_session_id, session_id))
         raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
         order = request.query.get("order")
+        if order is None:
+            order = "latest"
+        order = {"asc": "oldest", "desc": "latest"}.get(order, order)
         if order not in (None, "oldest", "latest"):
-            return _error_response("order must be one of: oldest, latest", 400, code="invalid_pagination")
+            return _error_response("order must be one of: oldest, latest, asc, desc", 400, code="invalid_pagination")
         try:
             offset = int(raw_offset)
             requested_limit = None if raw_limit is None else int(raw_limit)
@@ -2747,14 +3028,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
-        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
-        # Compression lineage: return root→tip messages, matching the REST router (#51058).
+        include_compacted = (not scoped and _coerce_request_bool(
+            request.query.get("include_compacted"), default=False))
+        # Master retains lineage. Scoped sees only uncompacted rows of its own ID.
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted, include_ancestors=True)
+            include_compacted=include_compacted, include_ancestors=not scoped)
+        if scoped:
+            messages = [m for m in messages if m.get("session_id") == session_id]
+        rows = [self._message_response(m) for m in messages]
         return web.json_response({
             "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": rows, "messages": rows,
             "pagination": {
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),
@@ -3034,6 +3319,153 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.info("Session SSE client disconnected while a live Bot Chat held the turn")
         return response
 
+    async def _chat_all_user_turn(self, request: web.Request) -> Optional[web.Response]:
+        """Authenticated chat:all label alone may submit to the owner's canonical FIFO.
+
+        Submit commits the user row before 202; ticketed steer attempts to
+        transfer its exact admission to the active generation. No foreign
+        source is relabelled api_server, no model/config fields are accepted.
+        """
+        if not self._scoped_chat_all(request):
+            return None
+        from gateway.session_authorities import active_authority
+        from gateway.session_contract import SessionActor, SessionRef, Submission
+        from gateway.session_results import admission_result
+        from gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
+        from hermes_state_runtime import get_session_admission
+        import sqlite3
+
+        sid = request.match_info["session_id"]
+        session, err = await self._get_existing_session_or_404(sid)
+        if err is not None:
+            return err
+        if not isinstance(session.get("source"), str) or not session["source"].strip():
+            return _error_response("Session source unavailable", 409, code="unsupported_session_source")
+        body, err = await self._read_json_body(request)
+        if err is not None:
+            return err
+        if set(body) - {"message", "input", "message_id", "mode"}:
+            return _error_response("Unsupported chat-control fields", 400, code="invalid_chat_control_fields")
+        if "message" in body and "input" in body:
+            return _error_response("Use message or input, not both", 400, code="invalid_chat_control_fields")
+        raw = body.get("message", body.get("input"))
+        if not isinstance(raw, str) or not raw.strip():
+            return _error_response("Non-empty user text required", 400, code="invalid_steer_input")
+        user_text = raw.strip()
+        mode = body.get("mode", "steer")
+        if mode not in ("steer", "queue", "reject"):
+            return _error_response("Invalid chat mode", 400, code="invalid_chat_mode")
+
+        authority = active_authority(self.gateway_runner)
+        if authority is None:
+            return _error_response("Session queue unavailable", 503, code="queue_unavailable")
+        ref = SessionRef(authority.profile_id, sid)
+        actor = SessionActor(
+            subject="scoped:" + request["scoped_key_label"],
+            profile_id=authority.profile_id,
+            capabilities=frozenset({"session:submit", "session:control", "session:operator"}),
+            transport_id="api-chat-all")
+        try:
+            authority.authorize(actor, ref, "session:submit")
+            handle = authority._handle(ref)
+        except RuntimeStoreError as exc:
+            return store_error_response(_openai_error, exc)
+        busy = handle.execution_state == "running"
+        if busy and mode == "reject":
+            return _error_response("Session is busy", 409, code="session_busy")
+        # Idempotency is bound to this actor + target in session_admissions.
+        # Caller IDs survive generation changes; legacy clients without IDs
+        # collapse identical text within the observed generation only.
+        in_body = body.get("message_id")
+        in_header = request.headers.get("Idempotency-Key")
+        if in_body is not None and in_header is not None and in_body != in_header:
+            return _error_response("Conflicting message IDs", 400, code="invalid_message_id")
+        given = in_body if in_body is not None else in_header
+        if given is not None and (
+            not isinstance(given, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,255}", given)):
+            return _error_response("Invalid message ID", 400, code="invalid_message_id")
+        message_id = given or hashlib.sha256(
+            (sid + "\0" + user_text + "\0" + str(handle.execution_generation)).encode("utf-8")
+        ).hexdigest()
+        try:
+            receipt = await authority.submit(actor, Submission(
+                request_id=message_id, ref=ref, payload={"text": user_text}, intent="queue"))
+        except RuntimeStoreError as exc:
+            if exc.reason in ("queue_full", "storage_unavailable", "runtime_draining"):
+                return _error_response("Session queue unavailable", 503, code="queue_unavailable")
+            return store_error_response(_openai_error, exc)
+        except (OSError, sqlite3.Error):
+            return _error_response("Session queue unavailable", 503, code="queue_unavailable")
+
+        def queued(status):
+            return web.json_response({
+                "object": "hermes.session.chat.steer",
+                "session_id": sid, "status": status, "accepted": True,
+            }, status=202, headers=self._session_headers(sid, None))
+
+        if busy or handle.execution_state != "idle":
+            if busy and mode == "steer" and receipt.status == "queued":
+                from gateway.session_queued_controls import steer_queued
+                from types import SimpleNamespace
+                try:
+                    await steer_queued(
+                        SimpleNamespace(authority=authority, actor=actor),
+                        ref, {"admission_id": receipt.admission_id})
+                    return queued("steered")
+                except RuntimeStoreError as exc:
+                    # The admission remains in durable FIFO, never silently
+                    # discarded merely because its turn ended during transfer.
+                    if exc.reason not in (
+                        "steer_unavailable", "session_idle", "admission_started",
+                        "stale_generation", "unsupported_control"):
+                        return store_error_response(_openai_error, exc)
+            return queued("queued")
+
+        # Idle: await the authority's existing settlement event, not a new
+        # worker/poll. Snapshot terminal state AFTER installing the waiter.
+        ticket = receipt.admission_id
+        request["delivery_id"] = ticket  # the committed row: durable across a restart
+        own_waiter = ticket not in authority.waiters
+        waiter = authority.waiters.setdefault(
+            ticket, asyncio.get_running_loop().create_future())
+        acknowledged = False
+        try:
+            row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
+            if row is None:
+                return _error_response("Session admission unavailable", 503, code="queue_unavailable")
+            if row["status"] != "terminal":
+                try:
+                    await asyncio.wait_for(asyncio.shield(waiter), _CHAT_ALL_ACK_BOUND_S)
+                except asyncio.TimeoutError:
+                    # The caller's own budget is shorter than a turn. The input is already
+                    # committed and will run: answer its durable id, never a failure it could
+                    # resend, and never a claim that the turn was delivered or accepted.
+                    row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
+                    if row is None or row["status"] != "terminal":
+                        acknowledged = True
+                        return web.json_response({
+                            "object": "hermes.session.chat.queued", "status": "queued",
+                            "session_id": sid, "delivery_id": ticket, "retryable": False,
+                        }, status=202, headers=self._session_headers(sid, None))
+            saved = await asyncio.to_thread(admission_result, authority.db, ticket)
+        except RuntimeStoreError as exc:
+            return store_error_response(_openai_error, exc)
+        finally:
+            # An acknowledged waiter stays registered: settlement (or a caller coalesced onto the
+            # same future) still needs it, and dropping it here would strand that caller forever.
+            if not acknowledged and own_waiter and authority.waiters.get(ticket) is waiter:
+                authority.waiters.pop(ticket, None)
+        if not saved:
+            return _error_response("Session result unavailable", 503, code="queue_unavailable")
+        result = saved.get("result") or {}
+        from gateway.platforms.api_server_openai_routes import _response_status
+        return web.json_response({
+            "object": "hermes.session.chat.completion",
+            "status": _response_status(result), "session_id": sid,
+            "message": {"role": "assistant", "content": result.get("final_response") or ""},
+            "usage": saved.get("usage") or {}, "runtime": {},
+        }, headers=self._session_headers(sid, None))
+
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn (plus the delivery lanes'
@@ -3042,6 +3474,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
         # Spending the budget without checking it refused every other caller while never
         # refusing this route — and a fleet's cross-machine DMs all arrive here.
+        # User-equivalent chat steering is handled by the owner's admission
+        # gate, not the API agent-turn concurrency limit.
+        chat_all_response = await self._chat_all_user_turn(request)
+        if chat_all_response is not None:
+            return chat_all_response
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
@@ -3063,6 +3500,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # transient classes re-run the SAME session once, resuming the failed attempt's unanswered
             # tail row from a fresh store read; auth/quota/config/model never re-run.
             if result_retry_action(result) != RETRY_NONE:
+                if request.get("scoped_key_label"):
+                    # Pin may have been revoked during the first agent turn.
+                    grant_error = await self._scoped_session_grant(request)
+                    if grant_error is not None:
+                        return grant_error
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
@@ -3938,7 +4380,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from gateway.platforms.api_server_config_guard import config_unavailable_middleware
             mws = [mw for mw in (  # the config guard outermost: entering a profile scope reads config
-                config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
+                config_unavailable_middleware, session_access_log_middleware,
+                scoped_key_guard_middleware,
+                self._make_profile_prefix_middleware(), cors_middleware,
                 body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
