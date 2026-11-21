@@ -17,6 +17,8 @@ _ALLOWED_OUTCOMES = frozenset({'completed', 'failed', 'interrupted', 'rejected'}
 
 def install_schema(conn: sqlite3.Connection) -> None:
     """Host-free candidate table, not an authorised production migration."""
+    if conn.in_transaction:
+        raise RuntimeError('schema_install_in_transaction')
     conn.executescript('''
     CREATE TABLE IF NOT EXISTS p0_completion_obligations (
         admission_id TEXT NOT NULL,
@@ -66,11 +68,9 @@ def enqueue_first_completion(conn: sqlite3.Connection, *, admission_id: str, eve
         raise ValueError('invalid_route_or_correlation')
     if any(type(v) is not int for v in (source_epoch, source_generation, destination_generation, created_at)):
         raise ValueError('invalid_generation_or_timestamp')
-    row = conn.execute('''SELECT status, owner_epoch, generation FROM session_admissions
-                          WHERE admission_id=?''', (admission_id,)).fetchone()
-    if (row is None or row['status'] != 'started'
-            or row['owner_epoch'] != source_epoch or row['generation'] != source_generation):
-        raise ValueError('stale_or_missing_admission')
+    # A caller replaying a previously committed first-terminal event must not
+    # require the now-terminal (or retired) admission to still be started.
+    # Build and compare the pinned event envelope BEFORE the first-write fence.
     payload = dict(admission_id=admission_id, event_kind=event_kind,
                    outcome=outcome, source_epoch=source_epoch,
                    source_generation=source_generation, provenance_source=authentic_source,
@@ -82,6 +82,21 @@ def enqueue_first_completion(conn: sqlite3.Connection, *, admission_id: str, eve
     values = (admission_id, event_kind, source_epoch, source_generation, authentic_source,
               outcome, result_digest, destination_role, destination_route,
               destination_generation, msg_id, nonce, encoded, digest, created_at)
+    existing = conn.execute('''SELECT source_epoch,source_generation,provenance_source,
+         outcome,result_digest,destination_role,destination_route,destination_generation,
+         msg_id,nonce,event_json,event_digest
+         FROM p0_completion_obligations WHERE admission_id=? AND event_kind=?''',
+        (admission_id, event_kind)).fetchone()
+    if existing is not None:
+        # created_at belongs to the ORIGINAL commit and must remain unchanged;
+        # a replay's current clock is not part of the immutable event identity.
+        if tuple(existing) != values[2:-1]:
+            raise ValueError('immutable_obligation_conflict')
+        return False
+    row = conn.execute('''SELECT status, owner_epoch, generation FROM session_admissions
+                          WHERE admission_id=?''', (admission_id,)).fetchone()
+    if row is None or tuple(row) != ('started', source_epoch, source_generation):
+        raise ValueError('stale_or_missing_admission')
     insert = conn.execute('''INSERT INTO p0_completion_obligations
         (admission_id,event_kind,source_epoch,source_generation,provenance_source,
          outcome,result_digest,destination_role,destination_route,destination_generation,
@@ -92,10 +107,10 @@ def enqueue_first_completion(conn: sqlite3.Connection, *, admission_id: str, eve
         return True
     existing = conn.execute('''SELECT source_epoch,source_generation,provenance_source,
          outcome,result_digest,destination_role,destination_route,destination_generation,
-         msg_id,nonce,event_json,event_digest,created_at
+         msg_id,nonce,event_json,event_digest
          FROM p0_completion_obligations WHERE admission_id=? AND event_kind=?''',
         (admission_id, event_kind)).fetchone()
-    if tuple(existing) != values[2:]:
+    if existing is None or tuple(existing) != values[2:-1]:
         raise ValueError('immutable_obligation_conflict')
     return False
 
