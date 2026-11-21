@@ -69,7 +69,7 @@ def pending_obligations(db):
     if table is None:
         return []
     return db._conn.execute(
-        "SELECT admission_id,source_epoch,source_generation,destination_role,state "
+        "SELECT admission_id,source_epoch,source_generation,state "
         "FROM p0_completion_obligations ORDER BY admission_id"
     ).fetchall()
 
@@ -82,24 +82,17 @@ def settle(db, epoch, row, *, result=None):
 
 
 def test_future_real_producer_must_install_hook_for_eligible_terminal(admission):
-    """Intentional RED until the REAL gateway caller wires the same-conn hook."""
+    """Real completion writes only immutable source coordinates and OPEN state."""
     db, epoch, row = admission
-    # This binding is TEST-INJECTED and intentionally carries no live identity.
-    # Future code must take its equivalent only from authenticated gateway state.
-    destination = {
-        "destination_role": ROLE,
-        "destination_route": "nonphysical-test-route",
-        "destination_generation": 17,
-    }
     finish_result(
         db, epoch=epoch, row=row, response="done", outcome="completed",
         result=captured_model_result(),
-        trusted_execution=real_runner_proof(epoch, row), p0_target=destination,
+        trusted_execution=real_runner_proof(epoch, row),
     )
     rows = pending_obligations(db)
     assert len(rows) == 1, "Missing P0 OPEN on the first genuine terminal write"
     assert tuple(rows[0]) == (
-        row["admission_id"], epoch, row["generation"], ROLE, "OPEN"
+        row["admission_id"], epoch, row["generation"], "OPEN"
     )
     assert get_session_admission(db, admission_id=row["admission_id"])["status"] == "terminal"
 
@@ -148,8 +141,7 @@ def test_forged_true_flag_cannot_create_p0_obligation(admission):
     finish_result(
         db, epoch=epoch, row=row, response='done', outcome='completed',
         result=synthetic, trusted_execution=True,
-        p0_target={'destination_role': ROLE, 'destination_route': 'forged-route',
-                   'destination_generation': 17})
+    )
     assert pending_obligations(db) == []
 
 
@@ -166,8 +158,7 @@ def test_cross_generation_execution_proof_is_refused(admission):
     finish_result(
         db, epoch=epoch, row=row, response='done', outcome='completed',
         result=captured_model_result(), trusted_execution=real_runner_proof(epoch, wrong),
-        p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-                   'destination_generation': 17})
+    )
     assert pending_obligations(db) == []
 
 
@@ -177,8 +168,7 @@ def test_no_p0_for_noncompleted_terminal_even_with_proof(admission, outcome):
     finish_result(
         db, epoch=epoch, row=row, response='done', outcome=outcome,
         result=captured_model_result(), trusted_execution=real_runner_proof(epoch, row),
-        p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-                   'destination_generation': 17})
+    )
     assert pending_obligations(db) == []
 
 
@@ -189,12 +179,11 @@ def test_positive_proof_replay_is_one_obligation(admission):
         finish_result(
             db, epoch=epoch, row=row, response='done', outcome='completed',
             result=captured_model_result(), trusted_execution=proof,
-            p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-                       'destination_generation': 17})
+        )
     assert len(pending_obligations(db)) == 1
 
 
-def test_real_commit_and_publish_call_uses_private_proof_and_live_resolver(admission):
+def test_real_commit_and_publish_writes_source_only_open(admission):
     db, epoch, row = admission
     published = []
     live = SimpleNamespace(
@@ -204,12 +193,7 @@ def test_real_commit_and_publish_call_uses_private_proof_and_live_resolver(admis
         settling={},
     )
     ref = SimpleNamespace(session_id=SID)
-    authority = SimpleNamespace(
-        db=db, epoch=epoch, steer_transfers={},
-        resolve_p0_completion_target=lambda _ref, _row: {
-            'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-            'destination_generation': 17},
-    )
+    authority = SimpleNamespace(db=db, epoch=epoch, steer_transfers={})
     captured = {**captured_model_result(), '_p0_execution_proof': real_runner_proof(epoch, row)}
     settlement = {}
     commit_and_publish(authority, live, ref, row, 'done', 'completed', captured, settlement)
@@ -218,7 +202,7 @@ def test_real_commit_and_publish_call_uses_private_proof_and_live_resolver(admis
     assert len(published) == 1
 
 
-def test_real_caller_without_verified_live_target_stays_fail_closed(admission):
+def test_real_caller_without_recipient_retains_source_open(admission):
     db, epoch, row = admission
     published = []
     live = SimpleNamespace(
@@ -231,7 +215,10 @@ def test_real_caller_without_verified_live_target_stays_fail_closed(admission):
     authority = SimpleNamespace(db=db, epoch=epoch, steer_transfers={})
     captured = {**captured_model_result(), '_p0_execution_proof': real_runner_proof(epoch, row)}
     commit_and_publish(authority, live, ref, row, 'done', 'completed', captured, {})
-    assert pending_obligations(db) == []
+    # Recipient binding is deferred to FIRE. Unavailable CDP does not erase OPEN.
+    assert len(pending_obligations(db)) == 1
+    assert tuple(pending_obligations(db)[0]) == (
+        row['admission_id'], epoch, row['generation'], 'OPEN')
 
 
 def test_positive_stale_epoch_refused_without_obligation(admission):
@@ -240,9 +227,7 @@ def test_positive_stale_epoch_refused_without_obligation(admission):
         finish_result(db, epoch=epoch + 1, row=row, response='done',
                       outcome='completed', result=captured_model_result(),
                       trusted_execution=real_runner_proof(epoch, row),
-                      p0_target={'destination_role': ROLE,
-                                 'destination_route': 'nonphysical-test-route',
-                                 'destination_generation': 17})
+                  )
     assert pending_obligations(db) == []
 
 
@@ -250,9 +235,7 @@ def test_p0_insert_abort_rolls_back_terminal_settlement(admission):
     db, epoch, row = admission
     db._conn.execute('''CREATE TABLE p0_completion_obligations (
         admission_id TEXT PRIMARY KEY, source_epoch INTEGER NOT NULL,
-        source_generation INTEGER NOT NULL, destination_role TEXT NOT NULL,
-        destination_route TEXT NOT NULL, destination_generation INTEGER NOT NULL,
-        state TEXT NOT NULL
+        source_generation INTEGER NOT NULL, state TEXT NOT NULL
     )''')
     db._conn.execute('''CREATE TRIGGER force_p0_abort BEFORE INSERT ON
         p0_completion_obligations BEGIN SELECT RAISE(ABORT, 'forced_p0_abort'); END''')
@@ -261,8 +244,7 @@ def test_p0_insert_abort_rolls_back_terminal_settlement(admission):
         finish_result(
             db, epoch=epoch, row=row, response='done', outcome='completed',
             result=captured_model_result(), trusted_execution=real_runner_proof(epoch, row),
-            p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-                       'destination_generation': 17})
+        )
     assert get_session_admission(db, admission_id=row['admission_id'])['status'] == 'started'
     assert pending_obligations(db) == []
 
@@ -272,16 +254,15 @@ def test_open_obligation_is_durable_after_independent_connection(admission):
     finish_result(
         db, epoch=epoch, row=row, response='done', outcome='completed',
         result=captured_model_result(), trusted_execution=real_runner_proof(epoch, row),
-        p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-                   'destination_generation': 17})
+    )
     with sqlite3.connect(str(db.db_path)) as separate:
         record = separate.execute(
-            'SELECT state, destination_generation FROM p0_completion_obligations '
+            'SELECT state, source_generation FROM p0_completion_obligations '
             'WHERE admission_id=?', (row['admission_id'],)).fetchone()
-    assert record == ('OPEN', 17)
+    assert record == ('OPEN', row['generation'])
 
 
-def test_rotated_recipient_live_resolver_returns_no_target(admission):
+def test_rotated_recipient_never_consulted_during_source_settlement(admission):
     db, epoch, row = admission
     published = []
     live = SimpleNamespace(
@@ -291,13 +272,48 @@ def test_rotated_recipient_live_resolver_returns_no_target(admission):
         settling={},
     )
     ref = SimpleNamespace(session_id=SID)
-    fresh_generation = 18  # The formerly eligible target was generation 17.
+    def forbidden_recipient_lookup(*_args):
+        raise AssertionError('No recipient or CDP lookup permitted at settlement')
     authority = SimpleNamespace(
         db=db, epoch=epoch, steer_transfers={},
-        resolve_p0_completion_target=lambda _ref, _row: (
-            {'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
-             'destination_generation': 17} if fresh_generation == 17 else None),
+        resolve_p0_completion_target=forbidden_recipient_lookup,
     )
     captured = {**captured_model_result(), '_p0_execution_proof': real_runner_proof(epoch, row)}
     commit_and_publish(authority, live, ref, row, 'done', 'completed', captured, {})
+    assert len(pending_obligations(db)) == 1
+    assert tuple(pending_obligations(db)[0]) == (
+        row['admission_id'], epoch, row['generation'], 'OPEN')
+    # The only publish above is a local completion frame, not a host sender call.
+
+
+def test_caller_cannot_pass_destination_at_settlement(admission):
+    db, epoch, row = admission
+    with pytest.raises(TypeError, match='p0_target'):
+        finish_result(
+            db, epoch=epoch, row=row, response='done', outcome='completed',
+            result=captured_model_result(), trusted_execution=True,
+            p0_target={'destination_role': ROLE, 'destination_route': 'forged-route',
+                       'destination_generation': 17})
+    assert pending_obligations(db) == []
+    assert get_session_admission(db, admission_id=row['admission_id'])['status'] == 'started'
+
+
+def test_source_open_schema_has_no_destination_columns(admission):
+    db, epoch, row = admission
+    finish_result(db, epoch=epoch, row=row, response='done', outcome='completed',
+                  result=captured_model_result(),
+                  trusted_execution=real_runner_proof(epoch, row))
+    cols = [item[1] for item in db._conn.execute(
+        'PRAGMA table_info(p0_completion_obligations)').fetchall()]
+    assert cols == ['admission_id', 'source_epoch', 'source_generation', 'state']
+    assert len(pending_obligations(db)) == 1
+
+
+def test_incomplete_model_result_is_not_a_source_wake(admission):
+    db, epoch, row = admission
+    incomplete = captured_model_result()
+    incomplete['result']['completed'] = False
+    finish_result(db, epoch=epoch, row=row, response='done',
+                  outcome='completed', result=incomplete,
+                  trusted_execution=real_runner_proof(epoch, row))
     assert pending_obligations(db) == []

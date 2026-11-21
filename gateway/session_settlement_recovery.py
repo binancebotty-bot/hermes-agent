@@ -184,15 +184,9 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     proof = captured.get('_p0_execution_proof') if isinstance(captured, dict) else None
     persistable = ({k: v for k, v in captured.items() if k != '_p0_execution_proof'}
                    if isinstance(captured, dict) else captured)
-    # No live authority resolver means NO receiver, never a persisted/stale fallback.
-    # Its host integration must validate role, route and generation using live CDP.
-    destination = None
-    resolver = getattr(authority, 'resolve_p0_completion_target', None)
-    if proof is not None and callable(resolver):
-        try:
-            destination = resolver(ref, row)
-        except Exception:
-            logger.exception('P0 recipient unavailable; no completion obligation for %s', row['admission_id'])
+    # Persist the source-only OPEN independently of recipient reachability. The
+    # delivery layer must verify its fresh target at FIRE time and claim single-flight;
+    # an unavailable destination leaves this OPEN, with no physical send here.
     # Compaction, redaction and outcome flags are CPU-only.
     prepared = prepare_result(row, response, outcome, persistable)
     admission_id = row['admission_id']
@@ -205,7 +199,7 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
         settlement['settled'], settlement['response'] = finish_result(
             authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
             result=persistable, prepared=prepared, transfers=transfers,
-            trusted_execution=proof, p0_target=destination)
+            trusted_execution=proof)
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
             _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)

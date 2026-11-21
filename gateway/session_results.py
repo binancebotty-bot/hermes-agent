@@ -99,7 +99,7 @@ def prepare_result(row, response, outcome, result=None):
 
 
 def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None,
-                  trusted_execution=False, p0_target=None):
+                  trusted_execution=False):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
@@ -107,8 +107,9 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
     `transfers` are the queued steers handed to this claim; they settle in the same write.
     `trusted_execution` must be an execution-bound private capability minted only
-    after the real TurnRunner runs; a caller's True flag grants nothing. A verified
-    `p0_target` is separately required and must not be copied from model output.
+    after the real TurnRunner runs; a caller's True flag grants nothing.
+    Target role, route and generation are intentionally absent at settlement;
+    a separate delivery worker resolves the current recipient when FIRE is authorised.
     """
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
@@ -137,20 +138,16 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     write = None if notice is None else (lambda conn, _current: close_discarded_turn(
         db, conn, row, notice, replace_after=row.get('transcript_mark'), display_metadata=display_metadata))
     # The obligation and terminal admission must survive (or roll back) together.
-    # Do not use model-supplied claims or a persisted route as proof of eligibility.
+    # No caller-supplied destination may enter this durable source-only row.
     p0_eligible = (
-        outcome == 'completed' and type(trusted_execution) is _P0ExecutionProof
+        outcome == 'completed' and isinstance(stored, dict)
+        and isinstance(stored.get('result'), dict)
+        and stored['result'].get('completed') is True
+        and type(trusted_execution) is _P0ExecutionProof
         and trusted_execution._seal is _P0_PROOF_SEAL
         and trusted_execution.admission_id == row['admission_id']
         and trusted_execution.epoch == epoch
         and trusted_execution.generation == row['generation']
-        and type(p0_target) is dict
-        and isinstance(p0_target.get('destination_role'), str)
-        and bool(p0_target['destination_role'].strip())
-        and isinstance(p0_target.get('destination_route'), str)
-        and bool(p0_target['destination_route'].strip())
-        and type(p0_target.get('destination_generation')) is int
-        and p0_target['destination_generation'] > 0
     )
     if p0_eligible:
         notice_write = write
@@ -161,18 +158,12 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
                 admission_id TEXT PRIMARY KEY,
                 source_epoch INTEGER NOT NULL,
                 source_generation INTEGER NOT NULL,
-                destination_role TEXT NOT NULL,
-                destination_route TEXT NOT NULL,
-                destination_generation INTEGER NOT NULL,
                 state TEXT NOT NULL
             )''')
             conn.execute('''INSERT INTO p0_completion_obligations
-                (admission_id, source_epoch, source_generation, destination_role,
-                 destination_route, destination_generation, state)
-                VALUES (?, ?, ?, ?, ?, ?, 'OPEN')''',
-                (current['admission_id'], epoch, current['generation'],
-                 p0_target['destination_role'], p0_target['destination_route'],
-                 p0_target['destination_generation']))
+                (admission_id, source_epoch, source_generation, state)
+                VALUES (?, ?, ?, 'OPEN')''',
+                (current['admission_id'], epoch, current['generation']))
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
         generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers,
         _terminal_write=write)
