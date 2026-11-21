@@ -180,8 +180,21 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     The caller publishes idle ``session.info`` on the loop afterwards (bot receipt wakeups are tasks).
     """
     from gateway.session_results import finish_result, prepare_result
+    # A private runner witness is not JSON and must never enter stored results.
+    proof = captured.get('_p0_execution_proof') if isinstance(captured, dict) else None
+    persistable = ({k: v for k, v in captured.items() if k != '_p0_execution_proof'}
+                   if isinstance(captured, dict) else captured)
+    # No live authority resolver means NO receiver, never a persisted/stale fallback.
+    # Its host integration must validate role, route and generation using live CDP.
+    destination = None
+    resolver = getattr(authority, 'resolve_p0_completion_target', None)
+    if proof is not None and callable(resolver):
+        try:
+            destination = resolver(ref, row)
+        except Exception:
+            logger.exception('P0 recipient unavailable; no completion obligation for %s', row['admission_id'])
     # Compaction, redaction and outcome flags are CPU-only.
-    prepared = prepare_result(row, response, outcome, captured)
+    prepared = prepare_result(row, response, outcome, persistable)
     admission_id = row['admission_id']
     # ``live`` is the drain's own entry: a delete committing on the loop after this write may
     # already have dropped it from ``authority.sessions``.
@@ -191,7 +204,8 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     try:
         settlement['settled'], settlement['response'] = finish_result(
             authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
-            result=captured, prepared=prepared, transfers=transfers)
+            result=persistable, prepared=prepared, transfers=transfers,
+            trusted_execution=proof, p0_target=destination)
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
             _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)

@@ -7,6 +7,35 @@ execution_result: ContextVar[dict | None] = ContextVar("execution_result", defau
 from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
+# A caller-supplied Boolean is not execution evidence. This private capability is
+# installed only after TurnRunner.run_sync returned from the real in-process agent.
+_P0_EXECUTED = object()
+_P0_PROOF_SEAL = object()
+
+
+class _P0ExecutionProof:
+    __slots__ = ('admission_id', 'epoch', 'generation', '_seal')
+
+    def __init__(self, admission_id, epoch, generation):
+        self.admission_id, self.epoch, self.generation = admission_id, epoch, generation
+        self._seal = _P0_PROOF_SEAL
+
+
+def mark_in_process_execution():
+    """Called by the real TurnRunner execution branch, never from a model result."""
+    captured = execution_result.get()
+    if captured is not None:
+        captured['_p0_executed'] = _P0_EXECUTED
+
+
+def admitted_execution_proof(captured, *, epoch, row):
+    """Bind the private runner witness to the claim that actually ran."""
+    if not isinstance(captured, dict) or captured.get('_p0_executed') is not _P0_EXECUTED:
+        return None
+    return _P0ExecutionProof(row['admission_id'], epoch, row['generation'])
+
+
+
 def record_unexecuted_failure(reply, reason=None, error=None):
     """The admitted turn never ran because it failed (agent initialization raised, history
     unreadable): commit a failed result for the executing admission, so no surface settles it
@@ -77,8 +106,9 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     worker path commits its own before this runs and is read back here.
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
     `transfers` are the queued steers handed to this claim; they settle in the same write.
-    Only an authenticated in-process caller may supply `trusted_execution` and a
-    verified `p0_target`; neither may be inferred from model output or stored flags.
+    `trusted_execution` must be an execution-bound private capability minted only
+    after the real TurnRunner runs; a caller's True flag grants nothing. A verified
+    `p0_target` is separately required and must not be copied from model output.
     """
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
@@ -109,7 +139,12 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
     # The obligation and terminal admission must survive (or roll back) together.
     # Do not use model-supplied claims or a persisted route as proof of eligibility.
     p0_eligible = (
-        trusted_execution is True and type(p0_target) is dict
+        outcome == 'completed' and type(trusted_execution) is _P0ExecutionProof
+        and trusted_execution._seal is _P0_PROOF_SEAL
+        and trusted_execution.admission_id == row['admission_id']
+        and trusted_execution.epoch == epoch
+        and trusted_execution.generation == row['generation']
+        and type(p0_target) is dict
         and isinstance(p0_target.get('destination_role'), str)
         and bool(p0_target['destination_role'].strip())
         and isinstance(p0_target.get('destination_route'), str)

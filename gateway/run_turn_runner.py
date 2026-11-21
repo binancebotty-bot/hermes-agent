@@ -1328,6 +1328,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 cwd_owner = restore_turn_cwd(self._runner, self._ctx.session_key, policy)
                 try:
                     result = self._run_sync_scoped()
+                    # Only a returned real agent run creates a private execution witness;
+                    # policy refusals, synthetic notices and model text cannot mint it.
+                    from gateway.session_results import mark_in_process_execution
+                    mark_in_process_execution()
                 finally:
                     persist_turn_cwd(self._runner, self._ctx.session_key, cwd_owner)
             from gateway.session_results import execution_result

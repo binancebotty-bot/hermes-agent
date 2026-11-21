@@ -388,9 +388,16 @@ async def execute_admission(authority, ref, row):
                               'error': response or 'The admitted turn failed.'}
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
-            authority.pending_results[row['admission_id']] = {
+            from gateway.session_results import admitted_execution_proof
+            pending = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
+            # This is process-local proof from TurnRunner, bound to the claimed admission;
+            # it is never put into SQLite, replay payloads, or model-visible result text.
+            proof = admitted_execution_proof(captured, epoch=authority.epoch, row=row)
+            if proof is not None:
+                pending['_p0_execution_proof'] = proof
+            authority.pending_results[row['admission_id']] = pending
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:

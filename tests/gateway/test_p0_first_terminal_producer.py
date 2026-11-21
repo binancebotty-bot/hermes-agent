@@ -9,7 +9,12 @@ import sqlite3
 
 import pytest
 
-from gateway.session_results import finish_result
+from gateway.session_results import (
+    finish_result, execution_result, mark_in_process_execution, admitted_execution_proof,
+)
+from gateway.session_settlement_recovery import commit_and_publish
+from types import SimpleNamespace
+import threading
 from hermes_state import SessionDB
 from hermes_state_runtime import (
     RuntimeStoreError, admit_session_input, begin_runtime_epoch,
@@ -45,6 +50,17 @@ def captured_model_result():
     }
 
 
+def real_runner_proof(epoch, row):
+    # Mimics the private witness only real TurnRunner.run_sync installs in production.
+    captured = {}
+    token = execution_result.set(captured)
+    try:
+        mark_in_process_execution()
+    finally:
+        execution_result.reset(token)
+    return admitted_execution_proof(captured, epoch=epoch, row=row)
+
+
 def pending_obligations(db):
     # The pre-fix source has no table. Absence means zero, not success.
     table = db._conn.execute(
@@ -78,7 +94,7 @@ def test_future_real_producer_must_install_hook_for_eligible_terminal(admission)
     finish_result(
         db, epoch=epoch, row=row, response="done", outcome="completed",
         result=captured_model_result(),
-        trusted_execution=True, p0_target=destination,
+        trusted_execution=real_runner_proof(epoch, row), p0_target=destination,
     )
     rows = pending_obligations(db)
     assert len(rows) == 1, "Missing P0 OPEN on the first genuine terminal write"
@@ -121,3 +137,167 @@ def test_replay_of_settled_untrusted_result_cannot_add_obligation(admission):
     settle(db, epoch, row)
     assert pending_obligations(db) == []
     assert get_session_admission(db, admission_id=row["admission_id"])["status"] == "terminal"
+
+
+def test_forged_true_flag_cannot_create_p0_obligation(admission):
+    db, epoch, row = admission
+    synthetic = {
+        'result': {'final_response': 'nothing executed', 'completed': True},
+        'synthetic_claimed_execution': True, 'usage': {},
+    }
+    finish_result(
+        db, epoch=epoch, row=row, response='done', outcome='completed',
+        result=synthetic, trusted_execution=True,
+        p0_target={'destination_role': ROLE, 'destination_route': 'forged-route',
+                   'destination_generation': 17})
+    assert pending_obligations(db) == []
+
+
+def test_missing_real_execution_proof_is_fail_closed(admission):
+    db, epoch, row = admission
+    assert admitted_execution_proof(captured_model_result(), epoch=epoch, row=row) is None
+    settle(db, epoch, row)
+    assert pending_obligations(db) == []
+
+
+def test_cross_generation_execution_proof_is_refused(admission):
+    db, epoch, row = admission
+    wrong = {**row, 'generation': row['generation'] + 1}
+    finish_result(
+        db, epoch=epoch, row=row, response='done', outcome='completed',
+        result=captured_model_result(), trusted_execution=real_runner_proof(epoch, wrong),
+        p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+                   'destination_generation': 17})
+    assert pending_obligations(db) == []
+
+
+@pytest.mark.parametrize('outcome', ['failed', 'interrupted', 'rejected'])
+def test_no_p0_for_noncompleted_terminal_even_with_proof(admission, outcome):
+    db, epoch, row = admission
+    finish_result(
+        db, epoch=epoch, row=row, response='done', outcome=outcome,
+        result=captured_model_result(), trusted_execution=real_runner_proof(epoch, row),
+        p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+                   'destination_generation': 17})
+    assert pending_obligations(db) == []
+
+
+def test_positive_proof_replay_is_one_obligation(admission):
+    db, epoch, row = admission
+    proof = real_runner_proof(epoch, row)
+    for _ in range(2):
+        finish_result(
+            db, epoch=epoch, row=row, response='done', outcome='completed',
+            result=captured_model_result(), trusted_execution=proof,
+            p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+                       'destination_generation': 17})
+    assert len(pending_obligations(db)) == 1
+
+
+def test_real_commit_and_publish_call_uses_private_proof_and_live_resolver(admission):
+    db, epoch, row = admission
+    published = []
+    live = SimpleNamespace(
+        event_stream=SimpleNamespace(lock=threading.RLock(),
+                                     publish=lambda sid, data: published.append((sid, data))),
+        controls=SimpleNamespace(snapshot=lambda sid, generation: None),
+        settling={},
+    )
+    ref = SimpleNamespace(session_id=SID)
+    authority = SimpleNamespace(
+        db=db, epoch=epoch, steer_transfers={},
+        resolve_p0_completion_target=lambda _ref, _row: {
+            'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+            'destination_generation': 17},
+    )
+    captured = {**captured_model_result(), '_p0_execution_proof': real_runner_proof(epoch, row)}
+    settlement = {}
+    commit_and_publish(authority, live, ref, row, 'done', 'completed', captured, settlement)
+    assert settlement['settled']['status'] == 'terminal'
+    assert len(pending_obligations(db)) == 1
+    assert len(published) == 1
+
+
+def test_real_caller_without_verified_live_target_stays_fail_closed(admission):
+    db, epoch, row = admission
+    published = []
+    live = SimpleNamespace(
+        event_stream=SimpleNamespace(lock=threading.RLock(),
+                                     publish=lambda sid, data: published.append(data)),
+        controls=SimpleNamespace(snapshot=lambda sid, generation: None),
+        settling={},
+    )
+    ref = SimpleNamespace(session_id=SID)
+    authority = SimpleNamespace(db=db, epoch=epoch, steer_transfers={})
+    captured = {**captured_model_result(), '_p0_execution_proof': real_runner_proof(epoch, row)}
+    commit_and_publish(authority, live, ref, row, 'done', 'completed', captured, {})
+    assert pending_obligations(db) == []
+
+
+def test_positive_stale_epoch_refused_without_obligation(admission):
+    db, epoch, row = admission
+    with pytest.raises(RuntimeStoreError, match='stale_epoch'):
+        finish_result(db, epoch=epoch + 1, row=row, response='done',
+                      outcome='completed', result=captured_model_result(),
+                      trusted_execution=real_runner_proof(epoch, row),
+                      p0_target={'destination_role': ROLE,
+                                 'destination_route': 'nonphysical-test-route',
+                                 'destination_generation': 17})
+    assert pending_obligations(db) == []
+
+
+def test_p0_insert_abort_rolls_back_terminal_settlement(admission):
+    db, epoch, row = admission
+    db._conn.execute('''CREATE TABLE p0_completion_obligations (
+        admission_id TEXT PRIMARY KEY, source_epoch INTEGER NOT NULL,
+        source_generation INTEGER NOT NULL, destination_role TEXT NOT NULL,
+        destination_route TEXT NOT NULL, destination_generation INTEGER NOT NULL,
+        state TEXT NOT NULL
+    )''')
+    db._conn.execute('''CREATE TRIGGER force_p0_abort BEFORE INSERT ON
+        p0_completion_obligations BEGIN SELECT RAISE(ABORT, 'forced_p0_abort'); END''')
+    db._conn.commit()
+    with pytest.raises(sqlite3.DatabaseError, match='forced_p0_abort'):
+        finish_result(
+            db, epoch=epoch, row=row, response='done', outcome='completed',
+            result=captured_model_result(), trusted_execution=real_runner_proof(epoch, row),
+            p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+                       'destination_generation': 17})
+    assert get_session_admission(db, admission_id=row['admission_id'])['status'] == 'started'
+    assert pending_obligations(db) == []
+
+
+def test_open_obligation_is_durable_after_independent_connection(admission):
+    db, epoch, row = admission
+    finish_result(
+        db, epoch=epoch, row=row, response='done', outcome='completed',
+        result=captured_model_result(), trusted_execution=real_runner_proof(epoch, row),
+        p0_target={'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+                   'destination_generation': 17})
+    with sqlite3.connect(str(db.db_path)) as separate:
+        record = separate.execute(
+            'SELECT state, destination_generation FROM p0_completion_obligations '
+            'WHERE admission_id=?', (row['admission_id'],)).fetchone()
+    assert record == ('OPEN', 17)
+
+
+def test_rotated_recipient_live_resolver_returns_no_target(admission):
+    db, epoch, row = admission
+    published = []
+    live = SimpleNamespace(
+        event_stream=SimpleNamespace(lock=threading.RLock(),
+                                     publish=lambda sid, data: published.append(data)),
+        controls=SimpleNamespace(snapshot=lambda sid, generation: None),
+        settling={},
+    )
+    ref = SimpleNamespace(session_id=SID)
+    fresh_generation = 18  # The formerly eligible target was generation 17.
+    authority = SimpleNamespace(
+        db=db, epoch=epoch, steer_transfers={},
+        resolve_p0_completion_target=lambda _ref, _row: (
+            {'destination_role': ROLE, 'destination_route': 'nonphysical-test-route',
+             'destination_generation': 17} if fresh_generation == 17 else None),
+    )
+    captured = {**captured_model_result(), '_p0_execution_proof': real_runner_proof(epoch, row)}
+    commit_and_publish(authority, live, ref, row, 'done', 'completed', captured, {})
+    assert pending_obligations(db) == []
