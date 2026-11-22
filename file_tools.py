@@ -10,14 +10,20 @@ Tests pass a temp root, so no real file is touched during verification.
 
 Credential deny list is **ON by default** (``deny_credentials=True``): the credential
 that authenticates an MCP client must not be readable by the tools it authorises.
-Paths whose relative parts match .ssh/.aws/.docker/.config/gh/.config/tailscale/secrets/
-.netrc/.npmrc/state.vscdb or secret/token/credential/password/private_key/id_rsa/
-id_ed25519/login/keychain material are refused with ``CREDENTIAL_DENIED``. The explicit
-opt-in ``deny_credentials=False`` restores the full approved reach deliberately.
+Matching is on PATH COMPONENTS and WHOLE WORDS, never on substrings: a directory
+component equal to a denied name (.ssh, .aws, .docker, secrets, ...) or a denied
+two-part sequence (.config/gh, .config/tailscale), or a filename that is a known
+credential filename, has a key/cert extension, or contains a credential word on a
+word boundary, is refused with ``CREDENTIAL_DENIED``. Ordinary names such as
+``tokenomics/`` or ``secretary/`` are not denied. The explicit opt-in
+``deny_credentials=False`` restores the full approved reach deliberately.
 
-A hard link is refused with ``HARD_LINK_REFUSED``: a file with st_nlink > 1 can alias
-a file outside the root while its resolved path still looks in-root. A legitimate
-project file is not hard-linked, so the extra links are a refusal, not a puzzle.
+A hard link is refused with ``HARD_LINK_REFUSED`` by default: a file with st_nlink > 1
+can alias a file outside the root while its resolved path still looks in-root. The
+link check and the read share ONE descriptor (os.open -> os.fstat -> read), so the
+object validated is the object read and a swap between check and read cannot leak.
+``allow_internal_hard_links=True`` is the explicit opt-in for hard-linked files; the
+README documents the trade-off.
 
 Response contract (JSON, never a raised exception for an expected condition):
 * read   -> OK | REFUSED | ERROR
@@ -32,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -41,12 +48,19 @@ DEFAULT_MAX_BYTES = 65536
 FILE_TOOL_NAMES = ("file_read", "file_write", "file_edit")
 
 # Deny by default: the credential authenticating the client must not be readable by
-# the tools it authorises. Individual parts, two-part paths, and filename tokens.
-_DENY_PARTS = frozenset({".ssh", ".aws", ".docker", ".env", ".npmrc", ".netrc",
-                         "secrets", "state.vscdb"})
-_DENY_SEQUENCES = ((".config", "gh"), (".config", "tailscale"))
-_DENY_TOKENS = ("secret", "token", "credential", "password", "private_key",
-                "id_rsa", "id_ed25519", "login", "keychain")
+# the tools it authorises. Only exact PATH COMPONENTS and WHOLE WORDS count: a
+# directory name is compared for equality, never as a substring of a longer name.
+_DENY_DIR_NAMES = frozenset({".ssh", ".aws", ".docker", ".env", "secret", "secrets"})
+_DENY_DIR_SEQUENCES = ((".config", "gh"), (".config", "tailscale"))
+_DENY_FILENAMES = frozenset({
+    "id_rsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "known_hosts",
+    "state.vscdb", "login data", "private_key", "keychain", "secrets",
+})
+_DENY_EXTENSIONS = frozenset({".pem", ".key", ".pfx", ".p12", ".keystore"})
+_DENY_WORDS = ("token", "secret", "credential", "password", "private_key",
+               "id_rsa", "id_ed25519", "login", "keychain")
+_WORD_RE = re.compile(r"\b(?:" + "|".join(
+    re.escape(word) for word in sorted(_DENY_WORDS, key=len, reverse=True)) + r")\b")
 
 
 def _decode_text(data: bytes) -> str | None:
@@ -66,21 +80,40 @@ def _decode_text(data: bytes) -> str | None:
 
 
 def _is_credential_path(relative: Path) -> bool:
+    """Deny by exact directory components and whole filename words, never substrings.
+
+    A directory component only counts when it EQUALS a denied name (or completes a
+    denied two-part sequence). The filename additionally counts when it equals a
+    known credential filename, has a key/cert extension, or contains a credential
+    vocabulary word on a word boundary -- so ``token`` is denied while
+    ``tokenomics``/``tokenizer``/``secretary``/``login_page`` are ordinary names.
+    """
     parts = [part.lower() for part in relative.parts]
-    if any(p in _DENY_PARTS or any(token in p for token in _DENY_TOKENS) for p in parts):
+    if not parts:
+        return False
+    parents, filename = parts[:-1], parts[-1]
+    if any(name in _DENY_DIR_NAMES for name in parents):
         return True
-    return any(tuple(parts[i:i + len(seq)]) == seq
-               for seq in _DENY_SEQUENCES for i in range(len(parts)))
+    if any(tuple(parents[i:i + len(seq)]) == seq
+           for seq in _DENY_DIR_SEQUENCES for i in range(len(parents))):
+        return True
+    if (filename in _DENY_FILENAMES
+            or filename == ".env" or filename.startswith(".env.")
+            or Path(filename).suffix.lower() in _DENY_EXTENSIONS
+            or _WORD_RE.search(filename)):
+        return True
+    return False
 
 
 class FileTools:
     """Handlers bound to one approved root. Shared state is configuration only."""
 
     def __init__(self, root=DEFAULT_ROOT, max_bytes: int = DEFAULT_MAX_BYTES,
-                 deny_credentials: bool = True):
+                 deny_credentials: bool = True, allow_internal_hard_links: bool = False):
         self.root = Path(root).resolve()
         self.max_bytes = max_bytes
         self.deny_credentials = deny_credentials
+        self.allow_internal_hard_links = allow_internal_hard_links
 
     def _inside_root(self, resolved: Path) -> bool:
         root = os.path.normcase(str(self.root))
@@ -95,20 +128,61 @@ class FileTools:
         resolved = Path(raw).resolve()
         if not self._inside_root(resolved):
             return None, {"status": "REFUSED", "reason": "ROOT_ESCAPE", "path": str(resolved)}
-        # resolve() cannot see a hard link: the in-root path stays in-root but shares
-        # the inode (and bytes) of a file that may live outside. A legitimate project
-        # file is not hard-linked, so st_nlink > 1 is a named refusal.
-        try:
-            info = resolved.stat()
-        except OSError:
-            info = None  # the caller's read below reports the real I/O error
-        if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            return None, {"status": "REFUSED", "reason": "HARD_LINK_REFUSED", "path": str(resolved)}
+        # Path resolution only. The hard-link decision is made on the descriptor
+        # that is actually read (see _open_checked), never on a separate path stat.
         if self.deny_credentials:
             relative = resolved.relative_to(self.root)
             if _is_credential_path(relative):
                 return None, {"status": "REFUSED", "reason": "CREDENTIAL_DENIED", "path": str(resolved)}
         return resolved, None
+
+    def _hard_link_refusal(self, info, path: Path) -> dict | None:
+        """Named refusal for a regular file with extra links, unless explicitly allowed."""
+        if (stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+                and not self.allow_internal_hard_links):
+            return {"status": "REFUSED", "reason": "HARD_LINK_REFUSED", "path": str(path)}
+        return None
+
+    def _link_refusal(self, path: Path) -> dict | None:
+        """Stat-based check for write paths that never read bytes (nothing to swap)."""
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None  # a missing file has no extra links; commit reports the real I/O error
+        return self._hard_link_refusal(info, path)
+
+    def _open_checked(self, path: Path):
+        """Open ONCE, fstat THAT DESCRIPTOR, return it for the read on the same fd.
+
+        The object validated is the object read: a path swap after open cannot
+        change what an already-open descriptor refers to. Returns (fd, refusal)
+        or (fd, None); open/fstat OSErrors propagate to the caller's read error.
+        """
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            os.close(fd)
+            raise
+        if not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            return None, {"status": "ERROR", "reason": "UNREADABLE", "path": str(path)}
+        refusal = self._hard_link_refusal(info, path)
+        if refusal:
+            os.close(fd)
+            return None, refusal
+        return fd, None
+
+    @staticmethod
+    def _read_fd(fd: int) -> bytes:
+        """Read an already-validated descriptor to EOF; the caller closes it."""
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
 
     @staticmethod
     def _read_error(exc: OSError, path: Path) -> str:
@@ -129,9 +203,17 @@ class FileTools:
         except (TypeError, ValueError):
             return json.dumps({"status": "ERROR", "reason": "BAD_MAX_BYTES", "path": str(resolved)})
         try:
-            raw = resolved.read_bytes()
+            fd, refusal = self._open_checked(resolved)
         except OSError as exc:
             return self._read_error(exc, resolved)
+        if refusal:
+            return json.dumps(refusal)
+        try:
+            raw = self._read_fd(fd)
+        except OSError as exc:
+            return self._read_error(exc, resolved)
+        finally:
+            os.close(fd)
         sample = raw[:limit]
         text = _decode_text(sample)
         if text is None:
@@ -155,7 +237,14 @@ class FileTools:
                 continue
 
     def _commit(self, dest: Path, data: bytes, create_parents: bool) -> str:
-        """Write temp + fsync + os.replace, then confirm from the file on disk."""
+        """Write temp + fsync + os.replace, then confirm from the file on disk.
+
+        ``dest`` is the single path validated by _resolve; no second resolve is
+        performed here, so the path checked is exactly the path written.
+        """
+        refusal = self._link_refusal(dest)
+        if refusal:
+            return json.dumps(refusal)
         parent = dest.parent
         if not parent.is_dir():
             if not create_parents:
@@ -166,7 +255,7 @@ class FileTools:
             except OSError as exc:
                 return json.dumps({"status": "NOT_WRITTEN", "reason": "PARENT_CREATE_FAILED",
                                    "path": str(dest), "detail": str(exc)})
-            if not self._inside_root(dest.resolve()):
+            if not self._inside_root(parent):
                 return json.dumps({"status": "REFUSED", "reason": "ROOT_ESCAPE", "path": str(dest)})
         fd, temp_name = tempfile.mkstemp(prefix="w3-", suffix=".tmp", dir=str(parent))
         committed = False
@@ -226,9 +315,17 @@ class FileTools:
         if not old:
             return json.dumps({"status": "NOT_WRITTEN", "reason": "EMPTY_OLD", "path": str(resolved)})
         try:
-            raw = resolved.read_bytes()
+            fd, refusal = self._open_checked(resolved)
         except OSError as exc:
             return self._read_error(exc, resolved)
+        if refusal:
+            return json.dumps(refusal)
+        try:
+            raw = self._read_fd(fd)
+        except OSError as exc:
+            return self._read_error(exc, resolved)
+        finally:
+            os.close(fd)
         text = _decode_text(raw)
         if text is None:
             return json.dumps({"status": "REFUSED", "reason": "BINARY_FILE", "path": str(resolved)})
@@ -242,13 +339,17 @@ class FileTools:
 
 
 def register_file_tools(mcp, *, root=DEFAULT_ROOT, max_bytes: int = DEFAULT_MAX_BYTES,
-                        deny_credentials: bool = True) -> int:
+                        deny_credentials: bool = True,
+                        allow_internal_hard_links: bool = False) -> int:
     """Register exactly the three approved file tools on an MCP server; return their count.
 
     Credentials are denied by default. Pass ``deny_credentials=False`` to deliberately
-    restore the full approved reach. There is no terminal/shell registration path here.
+    restore the full approved reach. Hard links are refused by default; pass
+    ``allow_internal_hard_links=True`` only when the root is trusted to contain every
+    alias (see README). There is no terminal/shell registration path here.
     """
-    handlers = FileTools(root=root, max_bytes=max_bytes, deny_credentials=deny_credentials)
+    handlers = FileTools(root=root, max_bytes=max_bytes, deny_credentials=deny_credentials,
+                         allow_internal_hard_links=allow_internal_hard_links)
     for name in FILE_TOOL_NAMES:
         mcp.tool()(getattr(handlers, name))
     return len(FILE_TOOL_NAMES)

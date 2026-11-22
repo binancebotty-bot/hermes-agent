@@ -84,6 +84,32 @@ hermes mcp-serve --verbose       # debug logging on stderr
 
 The server is stdio only. Logs go to stderr; stdout is the MCP wire.
 
+## Staged file tools (`--files`)
+
+`file_read` / `file_write` / `file_edit` are opt-in and require an explicit absolute
+path inside the approved root. Credential paths are denied by default: the matcher
+checks exact path components and whole filename words, never substrings, so
+`tokenomics/`, `secretary/`, `login_page.html` and `tokenizer/` are ordinary names
+while `.ssh/id_rsa`, `secrets/`, `.netrc`, `credentials`, `server.pem` and a file
+named `token` are refused. `deny_credentials=False` deliberately restores full reach.
+
+### Hard-link trade-off
+
+A hard link inside the root can share its inode with a file **outside** the root:
+real-path resolution still reports an in-root path, so confinement alone cannot
+see the alias. The default is therefore `HARD_LINK_REFUSED` for any regular file
+with `st_nlink > 1`. This also refuses legitimate in-root aliases (two files
+linked to share content) — a usability cost accepted to keep the boundary sound.
+
+`allow_internal_hard_links=True` is the explicit opt-in that permits hard-linked
+files. **It relaxes the check for every hard link, not only aliases verified to be
+inside the root.** If a directory under the root contains a hard link to a file
+outside it, that outside content becomes readable through the in-root name. Enable
+it only when the root is trusted to contain every alias of every file; the safe
+default stays refusal. The check and the read share one descriptor (`os.open` →
+`os.fstat` → read from that descriptor), so swapping the path between validation
+and read cannot substitute a different object.
+
 ## Development
 
 ```bash

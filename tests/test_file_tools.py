@@ -12,6 +12,7 @@ import hashlib
 import inspect
 import json
 import os
+import stat
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -428,3 +429,123 @@ def test_files_are_opt_in_and_default_surface_is_unchanged():
     b = {t.name for t in asyncio.run(with_files.list_tools())}
     assert not set(_ft().FILE_TOOL_NAMES) & a
     assert b - a == set(_ft().FILE_TOOL_NAMES)
+
+
+# --- BLOCKER 1: component/whole-word credential matching (second review) -----
+
+# The review reproduced five of these as denied=True; the sixth is the same class
+# of substring false positive (a "password" vocab word inside a longer word).
+ORDINARY_PATHS = (
+    "tokenomics/report.md",
+    "secretary/notes.txt",
+    "login_page.html",
+    "tokenizer/corpus.py",
+    "projects/keychain-manager/main.py",
+    "password_manager/notes.txt",
+)
+
+CREDENTIAL_PATHS = (
+    ".ssh/id_rsa",
+    "secrets/mcp_coordinator_token.txt",
+    ".netrc",
+    ".aws/credentials",
+    "server.pem",
+    "token",
+)
+
+
+@pytest.mark.parametrize("relative", ORDINARY_PATHS)
+def test_ordinary_paths_with_credential_substrings_are_allowed(sandbox, relative):
+    """Deny must match components / whole words, never substrings inside a name."""
+    root, _ = sandbox
+    target = root.joinpath(*relative.split("/"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("ORDINARY-CONTENT", encoding="utf-8")
+    result = _call(_handlers(root).file_read, path=str(target))
+    assert result["status"] == "OK", (relative, result)
+    assert result["content"] == "ORDINARY-CONTENT"
+
+
+@pytest.mark.parametrize("relative", CREDENTIAL_PATHS)
+def test_credential_paths_denied_by_component_filename_extension_or_word(sandbox, relative):
+    """Real credential paths stay denied under the component/whole-word matcher."""
+    root, _ = sandbox
+    target = root.joinpath(*relative.split("/"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("placeholder-not-a-real-credential", encoding="utf-8")
+    result = _call(_handlers(root).file_read, path=str(target))
+    assert result["status"] == "REFUSED" and result["reason"] == "CREDENTIAL_DENIED", (relative, result)
+
+
+# --- BLOCKER 2: validate and read the SAME descriptor (second review) --------
+
+def test_swap_between_validate_and_read_does_not_leak(sandbox, monkeypatch):
+    """A forged validation stat must not let the later read return outside bytes."""
+    root, outside = sandbox
+    victim = outside / "outside.txt"
+    victim.write_text("OUTSIDE-CONTENT", encoding="utf-8")
+    link = root / "safe_looking.txt"
+    try:
+        os.link(victim, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hard links unavailable on this host: {exc}")
+
+    real_stat = file_tools.os.stat
+
+    def benign_stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if stat.S_ISREG(info.st_mode):
+            fields = list(info)
+            fields[3] = 1  # st_nlink as the validate layer saw it before the swap
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(file_tools.os, "stat", benign_stat)
+    result = _call(_handlers(root).file_read, path=str(link))
+    assert "OUTSIDE-CONTENT" not in json.dumps(result), "stale stat let the read leak outside bytes"
+    assert result["status"] == "REFUSED" and result["reason"] == "HARD_LINK_REFUSED"
+
+
+def test_commit_validates_and_writes_the_same_resolved_path(sandbox, monkeypatch):
+    """One resolve from validation through commit; no second resolve to a different path."""
+    root, _ = sandbox
+    target = root / "made" / "parents" / "note.txt"
+    handler = _handlers(root)
+    real_resolve = file_tools.Path.resolve
+    calls = []
+    watching = []
+
+    def counting_resolve(self, *args, **kwargs):
+        if watching:
+            calls.append(str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(file_tools.Path, "resolve", counting_resolve)
+    watching.append(True)
+    try:
+        result = _call(handler.file_write, path=str(target),
+                       content="SAME-PATH", create_parents=True)
+    finally:
+        watching.clear()
+    assert result["status"] == "LANDED"
+    assert len(calls) == 1, f"expected one resolve (validated == written), got {calls}"
+    assert result["path"] == str(target)
+    assert target.read_text(encoding="utf-8") == "SAME-PATH"
+
+
+def test_internal_hard_link_allowed_only_with_explicit_flag(sandbox):
+    """Default still refuses; the opt-in permits an in-root alias."""
+    params = inspect.signature(_ft().FileTools).parameters
+    assert "allow_internal_hard_links" in params, "explicit internal-hard-link opt-in is missing"
+    root, _ = sandbox
+    original = root / "original.txt"
+    original.write_text("INTERNAL-LINK", encoding="utf-8")
+    alias = root / "alias.txt"
+    try:
+        os.link(original, alias)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hard links unavailable on this host: {exc}")
+    refused = _call(_handlers(root).file_read, path=str(alias))
+    assert refused["status"] == "REFUSED" and refused["reason"] == "HARD_LINK_REFUSED"
+    allowed = _call(_handlers(root, allow_internal_hard_links=True).file_read, path=str(alias))
+    assert allowed["status"] == "OK" and allowed["content"] == "INTERNAL-LINK"
