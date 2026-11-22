@@ -31,6 +31,9 @@ HOOK_BUDGET_SECONDS = 20.0
 HOOK_RESERVE_SECONDS = 0.5
 # Non-terminal: the send was still running when the hook budget expired.
 DELIVERY_PENDING = "DELIVERY_PENDING"
+# Retry staleness: a still-retryable event older than this is settled, not sent.
+RETRY_HORIZON_SECONDS = 900.0
+ABANDONED_STALE = "ABANDONED_STALE"
 # turn_id absent: no positional identity, no dedupe; the event uuid is the identity.
 AT_LEAST_ONCE_KEY = "none:at-least-once"
 STATUS_SUFFIX = ".status.json"
@@ -275,7 +278,8 @@ class WakeEmitter:
     def __init__(self, *, journal_path, peer_map_path, sender_path, pane_read_path=None,
                  ack_horizon_seconds=ACK_HORIZON_SECONDS, lane=None, enabled=False, logger=None,
                  lock_timeout_seconds=None, scope=None, python_executable=None,
-                 hook_budget_seconds=HOOK_BUDGET_SECONDS):
+                 hook_budget_seconds=HOOK_BUDGET_SECONDS,
+                 retry_horizon_seconds=RETRY_HORIZON_SECONDS):
         self.journal_path = Path(journal_path)
         self.peer_map_path = Path(peer_map_path)
         # One interpreter governs every child this emitter spawns. Cron workers
@@ -300,6 +304,7 @@ class WakeEmitter:
             LOCK_TIMEOUT_SECONDS if lock_timeout_seconds is None else lock_timeout_seconds)
         # Whole-hook wall-clock budget; the host abandons the callback at 30 s.
         self.hook_budget_seconds = float(hook_budget_seconds)
+        self.retry_horizon_seconds = float(retry_horizon_seconds)
 
     # -- journal -----------------------------------------------------------
     def _rows(self):
@@ -569,19 +574,47 @@ class WakeEmitter:
         impossible once a write-ahead intent exists.
         """
         for row in rows:
-            if row.get("kind") != "outcome" or row.get("event_id") != event_id:
-                continue
-            outcome = row.get("outcome")
-            if not isinstance(outcome, str):
-                continue
-            if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:", "INTERNAL_ERROR:",
-                                   "RECONCILE_UNPROVEN", "DELIVERY_ERROR:",
-                                   "DELIVERY_PENDING")):
-                continue
-            if outcome in ("DELIVERED_BUSY", "LOCK_TIMEOUT", "RECONCILE_UNAVAILABLE"):
-                continue
-            return True
+            if row.get("kind") == "outcome" and row.get("event_id") == event_id:
+                if WakeEmitter._is_terminal_outcome(row.get("outcome")):
+                    return True
         return False
+
+    @staticmethod
+    def _is_terminal_outcome(outcome):
+        """False for the non-terminal faults that deliberately stay retryable."""
+        if not isinstance(outcome, str):
+            return False
+        if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:", "INTERNAL_ERROR:",
+                               "RECONCILE_UNPROVEN", "DELIVERY_ERROR:",
+                               "DELIVERY_PENDING")):
+            return False
+        return outcome not in ("DELIVERED_BUSY", "LOCK_TIMEOUT", "RECONCILE_UNAVAILABLE")
+
+    def _settle_stale(self, event_id, rows):
+        """Settle an aged, still-retryable event once; never send for it.
+
+        Only the retry path calls this, so a fresh event and an already-terminal
+        one are untouched. ABANDONED_STALE is terminal to _has_delivery_outcome,
+        so a later invocation dedupes instead of recording a second settlement.
+        """
+        event_row = None
+        for row in rows:
+            if row.get("kind") == "event" and row.get("event_id") == event_id:
+                event_row = row
+                break
+        if event_row is None:
+            return False
+        latest = None
+        for row in rows:
+            if row.get("kind") == "outcome" and row.get("event_id") == event_id:
+                latest = row.get("outcome")
+        if self._is_terminal_outcome(latest):
+            return False
+        age = self._age_seconds(event_row)
+        if age is None or age <= self.retry_horizon_seconds:
+            return False
+        self._record(event_id, ABANDONED_STALE)
+        return True
 
     def _deliver_and_record(self, event_id, payload):
         """Resolve the origin, then decide + ATTEMPTED + send + record.
@@ -624,9 +657,13 @@ class WakeEmitter:
         positively present becomes DELIVERED_UNCONFIRMED, an unreadable pane
         fails closed, and a readable tail without the body is RECONCILE_UNPROVEN
         (unknown, not absent). No attempt row means no send can have happened,
-        so the event stays retry-eligible.
+        so the event stays retry-eligible. An event older than retry_horizon_seconds
+        is settled ABANDONED_STALE before any branch below: a late wake is worse
+        than no wake, so it is never sent and never retried again.
         """
         rows = self._rows()
+        if self._settle_stale(event_id, rows):
+            return ABANDONED_STALE
         if not self._has_attempt(rows, event_id):
             # No write-ahead intent exists, so no subprocess was ever invoked
             # for this event and no send can have happened. Safe to deliver.
@@ -955,6 +992,7 @@ def build_from_ctx(ctx):
         python_executable=config("python_executable", None),
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
         hook_budget_seconds=config("hook_budget_seconds", HOOK_BUDGET_SECONDS),
+        retry_horizon_seconds=config("retry_horizon_seconds", RETRY_HORIZON_SECONDS),
         lane=config("lane", None),
         enabled=bool(config("enabled", False)),
         scope=config("scope", None),
