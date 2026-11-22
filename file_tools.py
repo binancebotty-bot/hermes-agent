@@ -41,6 +41,7 @@ import os
 import re
 import stat
 import tempfile
+import unicodedata
 from pathlib import Path
 
 DEFAULT_ROOT = str(Path.home())
@@ -79,18 +80,64 @@ def _decode_text(data: bytes) -> str | None:
         return None
 
 
+def _normalise_part(part: str) -> str:
+    """Canonical form of one path component BEFORE any credential comparison.
+
+    NFKC folds compatibility lookalikes (fullwidth Latin, ligatures, composed
+    forms); Unicode format characters (zero-width space/joiners, bidi marks) are
+    dropped so they cannot split a denied name; casefold keeps matching
+    case-insensitive; rstrip mirrors Windows name resolution, which strips
+    trailing dots and spaces from every path component.
+    """
+    text = unicodedata.normalize("NFKC", part)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return text.casefold().rstrip(". ")
+
+
+_SCRIPT_NAMES = ("LATIN", "CYRILLIC", "GREEK", "ARMENIAN", "GEORGIAN", "HEBREW",
+                 "ARABIC", "HIRAGANA", "KATAKANA", "HANGUL", "CJK", "DEVANAGARI",
+                 "THAI", "BENGALI", "TAMIL", "KANNADA", "MALAYALAM")
+
+
+def _scripts_in(part: str) -> set[str]:
+    """Scripts used by the alphabetic characters of a component.
+
+    NFKC cannot map a homoglyph with no canonical equivalence (Cyrillic dze for
+    Latin 's', for example). A component that mixes scripts is therefore refused
+    outright; a single-script component is left to the normal deny matching.
+    """
+    scripts = set()
+    for ch in part:
+        if not ch.isalpha():
+            continue
+        name = unicodedata.name(ch, "")
+        for script in _SCRIPT_NAMES:
+            if script in name:
+                scripts.add(script)
+                break
+        else:
+            scripts.add("OTHER")
+    return scripts
+
+
 def _is_credential_path(relative: Path) -> bool:
     """Deny by exact directory components and whole filename words, never substrings.
 
-    A directory component only counts when it EQUALS a denied name (or completes a
-    denied two-part sequence). The filename additionally counts when it equals a
-    known credential filename, has a key/cert extension, or contains a credential
-    vocabulary word on a word boundary -- so ``token`` is denied while
-    ``tokenomics``/``tokenizer``/``secretary``/``login_page`` are ordinary names.
+    Each component is normalised first (NFKC, format-character stripping,
+    Windows trailing dot/space stripping, casefold) and a mixed-script component
+    is refused, so confusables and Windows name aliases cannot slip past the
+    comparison. A directory component only counts when it EQUALS a denied name
+    (or completes a denied two-part sequence). The filename additionally counts
+    when it equals a known credential filename, has a key/cert extension, or
+    contains a credential vocabulary word on a word boundary -- so ``token`` is
+    denied while ``tokenomics``/``tokenizer``/``secretary``/``login_page`` are
+    ordinary names.
     """
-    parts = [part.lower() for part in relative.parts]
+    parts = [_normalise_part(part) for part in relative.parts]
     if not parts:
         return False
+    if any(len(_scripts_in(part)) > 1 for part in parts):
+        return True
     parents, filename = parts[:-1], parts[-1]
     if any(name in _DENY_DIR_NAMES for name in parents):
         return True
