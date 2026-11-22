@@ -747,13 +747,14 @@ _TOOLS_ONLY_INSTRUCTIONS = (
 
 
 def create_mcp_server(event_bridge: Optional[EventBridge] = None, include_tools: bool = False,
-                      tools_only: bool = False) -> MCPServer:
+                      tools_only: bool = False, include_files: bool = False) -> MCPServer:
     """Create and return the Hermes MCP server.
 
     *include_tools* (``--tools``) adds the curated Hermes tool surface
     (:data:`.hermes_tools.EXPOSED_TOOLS`) after the messaging bridge; *tools_only*
     (``--tools-only``) serves that surface **instead of** the bridge — the safe face
-    without ``messages_send`` and the approval tools."""
+    without ``messages_send`` and the approval tools. *include_files* (``--files``)
+    adds the three owner-approved file tools; no terminal or shell tool is ever added."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(f"MCP server requires the 'mcp' package. {_MCP_INSTALL_HINT}")
     if tools_only:
@@ -767,11 +768,14 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None, include_tools:
         from .hermes_tools import register_hermes_tools
         reserved = () if tools_only else _TOOL_NAMES
         logger.info("exposed %d Hermes tools over MCP", register_hermes_tools(mcp, reserved=reserved))
+    if include_files:
+        from .file_tools import register_file_tools
+        logger.info("exposed %d approved file tools over MCP", register_file_tools(mcp))
     return mcp
 
 
 def run_mcp_server(verbose: bool = False, include_tools: bool = False, accept_hooks: bool = False,
-                   tools_only: bool = False) -> None:
+                   tools_only: bool = False, include_files: bool = False) -> None:
     """Start the Hermes MCP server on stdio."""
     if not _MCP_SERVER_AVAILABLE:
         print(f"Error: MCP server requires the 'mcp' package.\n{_MCP_INSTALL_HINT}", file=sys.stderr)
@@ -784,7 +788,8 @@ def run_mcp_server(verbose: bool = False, include_tools: bool = False, accept_ho
     bridge = None if tools_only else EventBridge()
     if bridge is not None:
         bridge.start()
-    server = create_mcp_server(event_bridge=bridge, include_tools=include_tools, tools_only=tools_only)
+    server = create_mcp_server(event_bridge=bridge, include_tools=include_tools,
+                               tools_only=tools_only, include_files=include_files)
     import asyncio
 
     async def _run():

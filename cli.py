@@ -18,6 +18,10 @@ def setup_cli(parser) -> None:
         "--accept-hooks", action="store_true",
         help="With --tools or --tools-only: run the shell hooks in config.yaml without the first-use "
              "consent check")
+    parser.add_argument(
+        "--files", action="store_true",
+        help="Expose the three owner-approved file tools (file_read, file_write, file_edit) under "
+             "C:\\Users\\wigmore and its subdirectories. No terminal or shell tool is exposed.")
 
 
 def handle_cli(args) -> None:
@@ -25,4 +29,5 @@ def handle_cli(args) -> None:
 
     run_mcp_server(verbose=bool(getattr(args, "verbose", False)), include_tools=bool(getattr(args, "tools", False)),
                    accept_hooks=bool(getattr(args, "accept_hooks", False)),
-                   tools_only=bool(getattr(args, "tools_only", False)))
+                   tools_only=bool(getattr(args, "tools_only", False)),
+                   include_files=bool(getattr(args, "files", False)))
