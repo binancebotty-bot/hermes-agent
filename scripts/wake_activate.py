@@ -26,6 +26,7 @@ Exit codes: 0 success, 2 refused (no write), 1 rollback could not verify.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib
 import importlib.util
@@ -43,6 +44,16 @@ from types import SimpleNamespace
 PLUGIN_ID = "wake-emitter"
 DEFAULT_LANE = "gpt6:assistant"
 ACK_HORIZON_SECONDS = 1800.0
+
+# Reviewed safety settings. A re-apply must establish these when absent and
+# preserve operator values verbatim when present; dropping the scope reopens
+# the conversation flood that only a hand-edited config had been holding back.
+REVIEWED_SCOPE = {
+    "require_task_id": True,
+    "task_id_prefix_allow": ["cron:", "subagent-"],
+    "task_id_exclude_prefixes": ["cron:8cff233194f6", "local-"],
+}
+REVIEWED_HOOK_BUDGET_SECONDS = 25
 
 # Importing the plugin to read its effective defaults must not drop __pycache__
 # into the source repo: that would dirty the tree the SHA pin is checking.
@@ -391,6 +402,20 @@ def run_pane_read(pane_read, lane, timeout=60):
 
 # -- config mutation --------------------------------------------------------
 
+def reviewed_python_executable(paths):
+    """Caller-supplied interpreter, else this interpreter when it is a venv.
+
+    Outside a venv there is no reviewed interpreter to pin, so the key stays
+    absent and the plugin keeps its historical sys.executable fallback.
+    """
+    explicit = getattr(paths, "python_executable", None)
+    if explicit:
+        return explicit
+    if sys.prefix != sys.base_prefix:
+        return sys.executable
+    return None
+
+
 def enable_in_config(config, paths):
     plugins = config.setdefault("plugins", {})
     enabled = plugins.get("enabled")
@@ -408,6 +433,16 @@ def enable_in_config(config, paths):
     settings["sender_path"] = str(paths.sender)
     settings["pane_read_path"] = str(paths.pane_read)
     settings["ack_horizon_seconds"] = ACK_HORIZON_SECONDS
+    # Fill only when absent: never rewrite an operator's reviewed values, and
+    # never drop keys this tool does not own. Scope is the flood gate, so no
+    # apply path may leave it unset on a fresh or previously hand-edited config.
+    if "scope" not in settings:
+        settings["scope"] = copy.deepcopy(REVIEWED_SCOPE)
+    if "hook_budget_seconds" not in settings:
+        settings["hook_budget_seconds"] = REVIEWED_HOOK_BUDGET_SECONDS
+    python_executable = reviewed_python_executable(paths)
+    if python_executable is not None and "python_executable" not in settings:
+        settings["python_executable"] = python_executable
     return config
 
 
@@ -727,6 +762,7 @@ def build_paths(home=None, source=None, repo=None, lane=None):
         sender=Path(os.environ.get("WAKE_SENDER") or (hermes / "scripts" / "pane_send_guarded.py")),
         pane_read=Path(os.environ.get("WAKE_PANE_READ") or (hermes / "scripts" / "pane_read.py")),
         journal=Path(os.environ.get("WAKE_JOURNAL") or (hermes / "state" / "event_outbox.jsonl")),
+        python_executable=os.environ.get("WAKE_PYTHON_EXECUTABLE"),
     )
 
 
@@ -736,6 +772,9 @@ def main(argv=None):
     parser.add_argument("--source", help="plugin source directory")
     parser.add_argument("--repo", help="git repo root of the plugin source")
     parser.add_argument("--lane", help="target lane in state/peer_lane_map.json")
+    parser.add_argument("--python-executable",
+                        help="interpreter for the emitter's child processes; default: this "
+                             "interpreter when inside a venv (or WAKE_PYTHON_EXECUTABLE)")
     parser.add_argument("--expected-sha", help="required source commit SHA to pin")
     parser.add_argument("--expected-config-sha",
                         help="required SHA-256 of the live config before any write")
@@ -748,6 +787,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     paths = build_paths(args.home, args.source, args.repo, args.lane)
+    if args.python_executable:
+        paths.python_executable = args.python_executable
 
     # Refuse before ANY command (including status/rollback) touches a real home.
     if args.rehearse:

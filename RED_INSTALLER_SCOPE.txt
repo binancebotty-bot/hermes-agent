@@ -1,0 +1,61 @@
+F..F.F.                                                                  [100%]
+================================== FAILURES ===================================
+______________ test_apply_establishes_reviewed_scope_when_absent ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9847/test_apply_establishes_reviewe0')
+
+    def test_apply_establishes_reviewed_scope_when_absent(tmp_path):
+        fx = build_home(tmp_path)
+        proc = run_tool(fx, ["--apply"])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+>       assert _settings(fx).get("scope") == REVIEWED_SCOPE
+E       AssertionError: assert None == {'require_task_id': True, 'task_id_prefix_allow': ['cron:', 'subagent-'], 'task_id_exclude_prefixes': ['cron:8cff233194f6', 'local-']}
+E        +  where None = <built-in method get of dict object at 0x0000012109B90AC0>('scope')
+E        +    where <built-in method get of dict object at 0x0000012109B90AC0> = {'enabled': True, 'lane': 'gpt6:assistant', 'journal_path': 'C:\\Users\\wigmore\\AppData\\Local\\Temp\\pytest-of-wigmo...\Temp\\pytest-of-wigmore\\pytest-9847\\test_apply_establishes_reviewe0\\home\\.hermes\\state\\peer_lane_map.json', ...}.get
+E        +      where {'enabled': True, 'lane': 'gpt6:assistant', 'journal_path': 'C:\\Users\\wigmore\\AppData\\Local\\Temp\\pytest-of-wigmo...\Temp\\pytest-of-wigmore\\pytest-9847\\test_apply_establishes_reviewe0\\home\\.hermes\\state\\peer_lane_map.json', ...} = _settings(namespace(home=WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9847/test_apply_establishes_r...pData/Local/Temp/pytest-of-wigmore/pytest-9847/test_apply_establishes_reviewe0/home/.hermes/state/event_outbox.jsonl')))
+
+tests\test_installer_scope_settings.py:67: AssertionError
+______ test_apply_establishes_budget_and_python_executable_when_missing _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9847/test_apply_establishes_budget_0')
+
+    def test_apply_establishes_budget_and_python_executable_when_missing(tmp_path):
+        # No WAKE_PYTHON_EXECUTABLE: the tool runs under the Hermes venv, so the
+        # installer must resolve its own interpreter as the reviewed default.
+        fx = build_home(tmp_path)
+        proc = run_tool(fx, ["--apply"])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        settings = _settings(fx)
+>       assert settings.get("hook_budget_seconds") == REVIEWED_HOOK_BUDGET_SECONDS
+E       AssertionError: assert None == 25
+E        +  where None = <built-in method get of dict object at 0x0000012109B325C0>('hook_budget_seconds')
+E        +    where <built-in method get of dict object at 0x0000012109B325C0> = {'enabled': True, 'lane': 'gpt6:assistant', 'journal_path': 'C:\\Users\\wigmore\\AppData\\Local\\Temp\\pytest-of-wigmo...\Temp\\pytest-of-wigmore\\pytest-9847\\test_apply_establishes_budget_0\\home\\.hermes\\state\\peer_lane_map.json', ...}.get
+
+tests\test_installer_scope_settings.py:145: AssertionError
+________________ test_apply_settings_dict_is_exact_after_apply ________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9847/test_apply_settings_dict_is_ex0')
+
+    def test_apply_settings_dict_is_exact_after_apply(tmp_path):
+        fx = build_home(tmp_path)
+        fx.env["WAKE_PYTHON_EXECUTABLE"] = sys.executable
+        proc = run_tool(fx, ["--apply"])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+>       assert _settings(fx) == _expected_settings(fx, sys.executable)
+E       AssertionError: assert {'enabled': T...ap.json', ...} == {'enabled': T...ap.json', ...}
+E         
+E         Omitting 7 identical items, use -vv to show
+E         Right contains 3 more items:
+E         {'hook_budget_seconds': 25,
+E          'python_executable': 'C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe',
+E          'scope': {'require_task_id': True,
+E                    'task_id_exclude_prefixes': ['cron:8cff233194f6', 'local-'],
+E                    'task_id_prefix_allow': ['cron:', 'subagent-']}}
+E         Use -v to get more diff
+
+tests\test_installer_scope_settings.py:180: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_installer_scope_settings.py::test_apply_establishes_reviewed_scope_when_absent
+FAILED tests/test_installer_scope_settings.py::test_apply_establishes_budget_and_python_executable_when_missing
+FAILED tests/test_installer_scope_settings.py::test_apply_settings_dict_is_exact_after_apply
+3 failed, 4 passed in 5.82s
