@@ -732,9 +732,10 @@ class WakeEmitter:
             # ACK_CHECK_ERROR is an observer failure, not a state change: the event
             # stays deliverable-unacked and is retried on a later invocation.
             # DELIVERED_UNCONFIRMED is terminal for delivery but still eligible for
-            # ACK reconciliation.
+            # ACK reconciliation. DELIVERY_PENDING is open: the send outlived the
+            # hook budget, so this sweep settles it from the pane, never by resend.
             state = latest.get(row.get("event_id"))
-            if state not in ("DELIVERED_UNACKED", "DELIVERED_UNCONFIRMED") and not (
+            if state not in (DELIVERY_PENDING, "DELIVERED_UNACKED", "DELIVERED_UNCONFIRMED") and not (
                 isinstance(state, str) and state.startswith("ACK_CHECK_ERROR:")
             ):
                 continue
@@ -746,7 +747,10 @@ class WakeEmitter:
 
         if not lane:
             for row in candidates:
-                self._note_ack_failure(rows, row["event_id"], UnresolvedLane.__name__)
+                if latest.get(row["event_id"]) == DELIVERY_PENDING:
+                    self._record(row["event_id"], "RECONCILE_UNAVAILABLE")
+                else:
+                    self._note_ack_failure(rows, row["event_id"], UnresolvedLane.__name__)
             return
 
         deadline = self._deadline(ACK_BUDGET_SECONDS)
@@ -756,6 +760,7 @@ class WakeEmitter:
                 self._log("ack reconciliation budget exhausted; remaining events wait")
                 break
             event_id = row["event_id"]
+            pending = latest.get(event_id) == DELIVERY_PENDING
             if self._consecutive_ack_errors(rows, event_id) >= ACK_MAX_ERRORS:
                 # Retry budget exhausted: record the terminal give-up once and stop
                 # retrying this event, so a broken observer cannot grow the journal.
@@ -764,8 +769,13 @@ class WakeEmitter:
             try:
                 turns = self._read_pane_turns(lane, remaining)
             except Exception as exc:
-                # Observer failure never becomes ACKED; leave it unacked for next time.
-                self._note_ack_failure(rows, event_id, type(exc).__name__)
+                if pending:
+                    # The pane is the only evidence for a pending send; an
+                    # unreadable one fails closed without ever retrying the send.
+                    self._record(event_id, "RECONCILE_UNAVAILABLE")
+                else:
+                    # Observer failure never becomes ACKED; leave it unacked for next time.
+                    self._note_ack_failure(rows, event_id, type(exc).__name__)
                 continue
             matched = None
             for index, text in enumerate(turns):
@@ -775,9 +785,13 @@ class WakeEmitter:
                 digest = hashlib.sha256(turns[matched].encode("utf-8")).hexdigest()[:12]
                 self.record_assistant_ack(event_id, message_ref="%d:%s" % (matched, digest),
                                           matched_utc=_utc_now())
+            elif pending and _delivery_present(turns, event_id):
+                self._record(event_id, "DELIVERED_UNCONFIRMED")
             else:
+                # A readable tail without the nonce proves nothing; a pending
+                # event stays open instead of expiring into a terminal state.
                 age = self._age_seconds(row)
-                if age is not None and age > self.ack_horizon_seconds:
+                if not pending and age is not None and age > self.ack_horizon_seconds:
                     self._record(event_id, "UNACKED_EXPIRED")
 
     def _consecutive_ack_errors(self, rows, event_id):

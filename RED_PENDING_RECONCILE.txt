@@ -1,0 +1,84 @@
+FFF.F                                                                    [100%]
+================================== FAILURES ===================================
+_______ test_a_pending_with_ack_token_becomes_delivered_acked_with_ref ________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9842/test_a_pending_with_ack_token_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002460FC429D0>
+
+    def test_a_pending_with_ack_token_becomes_delivered_acked_with_ref(tmp_path, monkeypatch):
+        """(a) An observed WAKE-ACK settles the event as DELIVERED_ACKED with a ref."""
+        worker, journal, sends = _pending_worker(tmp_path, monkeypatch)
+        monkeypatch.setattr(worker, "_read_pane_turns",
+                            lambda lane, timeout: [f"WAKE-ACK {EVENT_ID}"])
+        _invoke(worker)
+        row = _latest(journal)
+>       assert row["outcome"] == "DELIVERED_ACKED"
+E       AssertionError: assert 'DELIVERY_PENDING' == 'DELIVERED_ACKED'
+E         
+E         - DELIVERED_ACKED
+E         + DELIVERY_PENDING
+
+tests\test_pending_reconcile.py:50: AssertionError
+________ test_b_pending_with_body_no_ack_becomes_delivered_unconfirmed ________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9842/test_b_pending_with_body_no_ac0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002460F3DE910>
+
+    def test_b_pending_with_body_no_ack_becomes_delivered_unconfirmed(tmp_path, monkeypatch):
+        """(b) A positively present nonce with no ack settles DELIVERED_UNCONFIRMED."""
+        worker, journal, sends = _pending_worker(tmp_path, monkeypatch)
+        monkeypatch.setattr(worker, "_read_pane_turns",
+                            lambda lane, timeout: [f"EVENT-ID: {EVENT_ID}"])
+        _invoke(worker)
+>       assert _latest(journal)["outcome"] == "DELIVERED_UNCONFIRMED"
+E       AssertionError: assert 'DELIVERY_PENDING' == 'DELIVERED_UNCONFIRMED'
+E         
+E         - DELIVERED_UNCONFIRMED
+E         + DELIVERY_PENDING
+
+tests\test_pending_reconcile.py:61: AssertionError
+______________ test_c_pending_with_unreadable_pane_fails_closed _______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9842/test_c_pending_with_unreadable0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002460F3F5810>
+
+    def test_c_pending_with_unreadable_pane_fails_closed(tmp_path, monkeypatch):
+        """(c) An unreadable pane settles as RECONCILE_UNAVAILABLE, never delivered."""
+        worker, journal, sends = _pending_worker(tmp_path, monkeypatch)
+    
+        def unreadable(lane, timeout):
+            raise RuntimeError("pane unreadable")
+    
+        monkeypatch.setattr(worker, "_read_pane_turns", unreadable)
+        _invoke(worker)
+>       assert _latest(journal)["outcome"] == "RECONCILE_UNAVAILABLE"
+E       AssertionError: assert 'DELIVERY_PENDING' == 'RECONCILE_UNAVAILABLE'
+E         
+E         - RECONCILE_UNAVAILABLE
+E         + DELIVERY_PENDING
+
+tests\test_pending_reconcile.py:74: AssertionError
+________ test_hook_invocation_settles_pending_without_resending_its_id ________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9842/test_hook_invocation_settles_p0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002460FC5B550>
+
+    def test_hook_invocation_settles_pending_without_resending_its_id(tmp_path, monkeypatch):
+        """A completed later invocation settles the old event; no send carries its id."""
+        worker, journal, sends = _pending_worker(tmp_path, monkeypatch)
+        monkeypatch.setattr(worker, "_read_pane_turns",
+                            lambda lane, timeout: [f"WAKE-ACK {EVENT_ID}"])
+        worker.on_session_end(**_payload(turn_id=None, completed=True))
+>       assert _latest(journal)["outcome"] == "DELIVERED_ACKED"
+E       AssertionError: assert 'DELIVERY_PENDING' == 'DELIVERED_ACKED'
+E         
+E         - DELIVERED_ACKED
+E         + DELIVERY_PENDING
+
+tests\test_pending_reconcile.py:99: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_pending_reconcile.py::test_a_pending_with_ack_token_becomes_delivered_acked_with_ref
+FAILED tests/test_pending_reconcile.py::test_b_pending_with_body_no_ack_becomes_delivered_unconfirmed
+FAILED tests/test_pending_reconcile.py::test_c_pending_with_unreadable_pane_fails_closed
+FAILED tests/test_pending_reconcile.py::test_hook_invocation_settles_pending_without_resending_its_id
+4 failed, 1 passed in 1.47s
