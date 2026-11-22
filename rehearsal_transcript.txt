@@ -1,6 +1,6 @@
 ==============================================================================
-WAKE ACTIVATION REHEARSAL - fake HOME: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-o2zonbto\home
-pinned sha: 4501eaf2423793ec96d726090152c5f17b146501
+WAKE ACTIVATION REHEARSAL - fake HOME: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-8mnbkxjb\home
+pinned sha: 69cbcab4ca982dcc532b040ba1b0e05575bc1736
 ==============================================================================
 
 pre-apply config sha256: 0b321dffe972e019da91562895b50f3afc287872bc3dd05505d89dceae108413
@@ -8,25 +8,25 @@ pre-apply config sha256: 0b321dffe972e019da91562895b50f3afc287872bc3dd05505d89dc
 $ python scripts/wake_activate.py --apply
   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
   pane reachable: MATCHED_BY_CONV
-  backup: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-o2zonbto\home\.hermes\config.yaml.wake-backup-20261122T022952Z
-  installed C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-o2zonbto\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+  backup: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-8mnbkxjb\home\.hermes\config.yaml.wake-backup-20261122T023431Z
+  installed C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-8mnbkxjb\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
   config enabled; readback flag_state=ON (ruamel round-trip)
-  record: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-o2zonbto\home\.hermes\state\wake_activation.json
-  pinned sha 4501eaf2423793ec96d726090152c5f17b146501
-RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "4501eaf2423793ec96d726090152c5f17b146501", "files": 3, "verified": true}
+  record: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-8mnbkxjb\home\.hermes\state\wake_activation.json
+  pinned sha 69cbcab4ca982dcc532b040ba1b0e05575bc1736
+RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "69cbcab4ca982dcc532b040ba1b0e05575bc1736", "files": 3, "verified": true}
 [exit 0]
 
-post-apply config sha256: c84502d6e8165b8155ea289c37132b1859951532aceb6ebcb1637f9c08e5f44a
+post-apply config sha256: a7d7c52f9470ec645c9ff9755a2580e7544794a89e901f85438e3187f2b5ec76
 
 $ python scripts/wake_activate.py --status
 {
  "activation_record": {
   "action": "apply",
-  "backup_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\config.yaml.wake-backup-20261122T022952Z",
-  "config_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\config.yaml",
+  "backup_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\config.yaml.wake-backup-20261122T023431Z",
+  "config_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\config.yaml",
   "config_sha256_before": "0b321dffe972e019da91562895b50f3afc287872bc3dd05505d89dceae108413",
   "dirty": false,
-  "expected_sha": "4501eaf2423793ec96d726090152c5f17b146501",
+  "expected_sha": "69cbcab4ca982dcc532b040ba1b0e05575bc1736",
   "file_hashes": {
    "__init__.py": "f2dc227a2b45717b8c39a80afd41690ed6d5315f48b495e6fd2a3e8b2f371c16",
    "emitter.py": "8e9a84c18133b232c3e5467efe63676cddb30480b02c1a8f0aa2632a42c9d507",
@@ -39,26 +39,26 @@ $ python scripts/wake_activate.py --status
    "plugin.yaml": "2a0e0cc453b4d71bb6aa3459c811654bf402c8572b381ce9ca496d2d6579721c"
   },
   "lane": "gpt6:assistant",
-  "plugin_dir": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\plugins\\wake-emitter",
+  "plugin_dir": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\plugins\\wake-emitter",
   "plugin_id": "wake-emitter",
-  "repo": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\oc-runs\\w1-wake-w1",
-  "source_dir": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\oc-runs\\w1-wake-w1\\plugins\\wake-emitter",
-  "source_sha": "4501eaf2423793ec96d726090152c5f17b146501",
+  "repo": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\oc-runs\\w1-wake-w1",
+  "source_dir": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\oc-runs\\w1-wake-w1\\plugins\\wake-emitter",
+  "source_sha": "69cbcab4ca982dcc532b040ba1b0e05575bc1736",
   "state": "applied",
-  "utc": "2026-11-22T02:29:52Z"
+  "utc": "2026-11-22T02:34:31Z"
  },
  "config": {
-  "path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\config.yaml",
+  "path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\config.yaml",
   "present": true
  },
  "effective_settings": {
   "ack_horizon_seconds": 1800.0,
   "enabled": true,
-  "journal_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\state\\event_outbox.jsonl",
+  "journal_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\state\\event_outbox.jsonl",
   "lane": "gpt6:assistant",
-  "pane_read_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\scripts\\pane_read.py",
-  "peer_lane_map_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\state\\peer_lane_map.json",
-  "sender_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-o2zonbto\\home\\.hermes\\scripts\\pane_send_guarded.py"
+  "pane_read_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\scripts\\pane_read.py",
+  "peer_lane_map_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\state\\peer_lane_map.json",
+  "sender_path": "C:\\Users\\wigmore\\AppData\\Local\\Temp\\wake-rehearse-8mnbkxjb\\home\\.hermes\\scripts\\pane_send_guarded.py"
  },
  "flag": {
   "flag_state": "ON",
@@ -78,7 +78,7 @@ $ python scripts/wake_activate.py --status
   "source_present": true
  },
  "plugin_id": "wake-emitter",
- "utc": "2026-11-22T02:29:53Z",
+ "utc": "2026-11-22T02:34:31Z",
  "yaml_lib": "ruamel"
 }
 [exit 0]
@@ -86,8 +86,8 @@ $ python scripts/wake_activate.py --status
 config clobbered post-apply sha256: 607f2af7dc63dbd2e1ad1fd500b3b5379d71018fe76ab12bdc591ada61e3b0f5
 
 $ python scripts/wake_activate.py --rollback
-  config restored from C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-o2zonbto\home\.hermes\config.yaml.wake-backup-20261122T022952Z
-  plugin moved aside: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-o2zonbto\home\.hermes\plugins\wake-emitter.rolledback-20261122T022953Z
+  config restored from C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-8mnbkxjb\home\.hermes\config.yaml.wake-backup-20261122T023431Z
+  plugin moved aside: C:\Users\wigmore\AppData\Local\Temp\wake-rehearse-8mnbkxjb\home\.hermes\plugins\wake-emitter.rolledback-20261122T023431Z
 RESULT {"action": "rollback", "state": "rolled_back", "verified": true, "config_hash_matches": true, "plugin_dir_absent": true, "config_sha256": "0b321dffe972e019da91562895b50f3afc287872bc3dd05505d89dceae108413"}
 [exit 0]
 

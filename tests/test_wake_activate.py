@@ -28,15 +28,16 @@ LANE = "gpt6:assistant"
 CONV = "https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1"
 JOURNAL = "event_outbox.jsonl"
 
-FAKE_PANE_READ = '''\
-import sys
-lane = sys.argv[1] if len(sys.argv) > 1 else ""
-if lane == "gpt6:unreachable":
-    print("NO_MATCH for %r. tabs seen:" % lane)
-    raise SystemExit(1)
-print("MATCHED_BY_CONV 6b01a297 (role %s; tab title lags)" % lane)
-print('{"url":"%s","selector_chain":"main-div-group","count":1,"turns":[{"role":"unknown","text":"hello"}]}' % ("''' + CONV + '''"))
-'''
+FAKE_PANE_READ = (
+    'import sys\n'
+    'lane = sys.argv[1] if len(sys.argv) > 1 else ""\n'
+    'if lane == "gpt6:unreachable":\n'
+    '    print("NO_MATCH for %r. tabs seen:" % lane)\n'
+    '    raise SystemExit(1)\n'
+    'print("MATCHED_BY_CONV 6b01a297 (role %s; tab title lags)" % lane)\n'
+    'print(\'{"url":"' + CONV + '","selector_chain":"main-div-group","count":1,'
+    '"turns":[{"role":"unknown","text":"hello"}]}\')\n'
+)
 
 FAKE_CONFIG = """\
 # fake hermes config for the activation rehearsal
