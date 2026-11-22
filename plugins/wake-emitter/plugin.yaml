@@ -1,0 +1,7 @@
+name: wake-emitter
+version: 1.0.0
+label: Wake Emitter
+description: "Durable completion-event producer. Records on_session_end events in an append-only journal and wakes the lane bound in state/peer_lane_map.json. Flag defaults OFF; no background execution."
+author: "Hermes Agent"
+provides_hooks:
+  - on_session_end

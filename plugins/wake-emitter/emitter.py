@@ -826,13 +826,16 @@ def build_from_ctx(ctx):
             return default if value is None else value
         return default
 
+    # Defaults are deliberately fail-closed and absolute: an unconfigured install
+    # has no lane, so resolve_origin refuses, and every path is anchored at the
+    # Hermes home so an arbitrary CWD cannot redirect the journal or the sender.
     return WakeEmitter(
-        journal_path=Path(config("journal_path", "state/event_outbox.jsonl")),
-        peer_map_path=Path(config("peer_lane_map_path", "state/peer_lane_map.json")),
-        sender_path=config("sender_path", "scripts/pane_send_guarded.py"),
+        journal_path=Path(config("journal_path", str(Path.home() / ".hermes" / "state" / "event_outbox.jsonl"))),
+        peer_map_path=Path(config("peer_map_path", str(Path.home() / ".hermes" / "state" / "peer_lane_map.json"))),
+        sender_path=config("sender_path", str(Path.home() / ".hermes" / "scripts" / "pane_send_guarded.py")),
         pane_read_path=config("pane_read_path", str(Path.home() / ".hermes" / "scripts" / "pane_read.py")),
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
-        lane=config("lane", "hermes:coordinator"),
+        lane=config("lane", None),
         enabled=bool(config("enabled", False)),
         logger=getattr(ctx, "logger", None),
     )
