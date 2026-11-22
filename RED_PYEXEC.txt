@@ -1,0 +1,98 @@
+FFFF                                                                     [100%]
+================================== FAILURES ===================================
+___________ test_send_invocation_uses_configured_python_executable ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9811/test_send_invocation_uses_conf0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000020C396C4490>
+
+    def test_send_invocation_uses_configured_python_executable(tmp_path, monkeypatch):
+        """(a) SEND child argv[0] is exactly the configured value."""
+        emitter = _load()
+        worker, calls, sender, _pane = _fixture(tmp_path, monkeypatch, emitter,
+                                                python_executable=CFG_PY)
+        outcome = worker.on_session_end(**_payload())
+        assert outcome == "DELIVERED_UNACKED", outcome
+        sends = [c for c in calls if c[1] == sender]
+        assert sends, "sender was never invoked"
+>       assert sends[0][0] == CFG_PY, sends[0]
+E       AssertionError: ['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\AppData\\Local\\Temp\\py...54c82-d79a-4438-a384-04461698be62', '--expect-conv', 'https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1', ...]
+E       assert 'C:\\Users\\w...s\\python.exe' == 'C:/configured/python.exe'
+E         
+E         - C:/configured/python.exe
+E         + C:\Users\wigmore\.hermes\hermes-agent\venv\Scripts\python.exe
+
+C:\Users\wigmore\oc-runs\w1-activate-w1\tests\test_python_executable.py:108: AssertionError
+_________ test_pane_read_invocation_uses_configured_python_executable _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9811/test_pane_read_invocation_uses0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000020C38E96910>
+
+    def test_pane_read_invocation_uses_configured_python_executable(tmp_path, monkeypatch):
+        """(b) PANE READ child argv[0] is the same configured value."""
+        emitter = _load()
+        worker, calls, _sender, pane = _fixture(tmp_path, monkeypatch, emitter,
+                                                python_executable=CFG_PY)
+        assert worker._read_pane_turns(LANE, 5) == []
+        reads = [c for c in calls if c[1] == pane]
+        assert reads, "pane read was never invoked"
+>       assert reads[0][0] == CFG_PY, reads[0]
+E       AssertionError: ['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\AppData\\Local\\Temp\\pytest-of-wigmore\\pytest-9811\\test_pane_read_invocation_uses0\\pane_read.py', 'gpt6:assistant', '--json']
+E       assert 'C:\\Users\\w...s\\python.exe' == 'C:/configured/python.exe'
+E         
+E         - C:/configured/python.exe
+E         + C:\Users\wigmore\.hermes\hermes-agent\venv\Scripts\python.exe
+
+C:\Users\wigmore\oc-runs\w1-activate-w1\tests\test_python_executable.py:119: AssertionError
+__________ test_both_children_fall_back_to_sys_executable_when_unset __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9811/test_both_children_fall_back_t0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000020C3976E250>
+
+    def test_both_children_fall_back_to_sys_executable_when_unset(tmp_path, monkeypatch):
+        """(c) with the key unset, BOTH children use sys.executable."""
+        emitter = _load()
+        worker, calls, sender, pane = _fixture(tmp_path, monkeypatch, emitter)
+>       assert worker.python_executable == sys.executable
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'WakeEmitter' object has no attribute 'python_executable'
+
+C:\Users\wigmore\oc-runs\w1-activate-w1\tests\test_python_executable.py:126: AttributeError
+____ test_bogus_python_executable_yields_truthful_refusal_without_raising _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9811/test_bogus_python_executable_y0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000020C39770BD0>
+
+    def test_bogus_python_executable_yields_truthful_refusal_without_raising(tmp_path, monkeypatch):
+        """(d) a bogus interpreter produces REFUSED, not an escaping exception."""
+        emitter = _load()
+        bogus = "C:/definitely/missing/python.exe"
+    
+        def crash_for_bogus(argv, **kwargs):
+            # A real interpreter would launch the child; the bogus one dies before
+            # printing any delivery proof -- the production REFUSED:EXIT_1 shape.
+            if argv[0] == bogus:
+                return SimpleNamespace(
+                    returncode=1, stdout="",
+                    stderr="ModuleNotFoundError: No module named 'websocket'")
+            return SimpleNamespace(returncode=0, stdout="GUARD_COMPLETE key=x", stderr="")
+    
+        def recording_run(argv, **kwargs):
+            return crash_for_bogus(argv, **kwargs)
+    
+        worker, calls, sender, _pane = _fixture(tmp_path, monkeypatch, emitter,
+                                                python_executable=bogus, run=recording_run)
+        outcome = worker.on_session_end(**_payload())  # must not raise
+        assert isinstance(outcome, str), outcome
+>       assert outcome.startswith("REFUSED:"), outcome
+E       AssertionError: DELIVERED_UNACKED
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x0000020C38E83960>('REFUSED:')
+E        +    where <built-in method startswith of str object at 0x0000020C38E83960> = 'DELIVERED_UNACKED'.startswith
+
+C:\Users\wigmore\oc-runs\w1-activate-w1\tests\test_python_executable.py:157: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_python_executable.py::test_send_invocation_uses_configured_python_executable
+FAILED tests/test_python_executable.py::test_pane_read_invocation_uses_configured_python_executable
+FAILED tests/test_python_executable.py::test_both_children_fall_back_to_sys_executable_when_unset
+FAILED tests/test_python_executable.py::test_bogus_python_executable_yields_truthful_refusal_without_raising
+4 failed in 1.18s

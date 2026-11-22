@@ -265,9 +265,13 @@ class WakeEmitter:
 
     def __init__(self, *, journal_path, peer_map_path, sender_path, pane_read_path=None,
                  ack_horizon_seconds=ACK_HORIZON_SECONDS, lane=None, enabled=False, logger=None,
-                 lock_timeout_seconds=None, scope=None):
+                 lock_timeout_seconds=None, scope=None, python_executable=None):
         self.journal_path = Path(journal_path)
         self.peer_map_path = Path(peer_map_path)
+        # One interpreter governs every child this emitter spawns. Cron workers
+        # run a tools Python without third-party modules, so operators can point
+        # this at an interpreter that has them; unset keeps the historical value.
+        self.python_executable = str(python_executable) if python_executable else sys.executable
         self.sender_path = str(sender_path)
         self.pane_read_path = str(pane_read_path) if pane_read_path else str(
             Path.home() / ".hermes" / "scripts" / "pane_read.py"
@@ -795,7 +799,7 @@ class WakeEmitter:
             raise
 
     def _read_pane_turns(self, lane, timeout):
-        argv = [sys.executable, self.pane_read_path, lane, "--json"]
+        argv = [self.python_executable, self.pane_read_path, lane, "--json"]
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         if completed.returncode != 0:
             raise subprocess.CalledProcessError(completed.returncode, argv,
@@ -825,7 +829,7 @@ class WakeEmitter:
             f"and nothing else: WAKE-ACK {event_id}"
         )
         return [
-            sys.executable,
+            self.python_executable,
             self.sender_path,
             lane or "",
             nonce,
@@ -870,6 +874,7 @@ def build_from_ctx(ctx):
         peer_map_path=Path(config("peer_map_path", str(Path.home() / ".hermes" / "state" / "peer_lane_map.json"))),
         sender_path=config("sender_path", str(Path.home() / ".hermes" / "scripts" / "pane_send_guarded.py")),
         pane_read_path=config("pane_read_path", str(Path.home() / ".hermes" / "scripts" / "pane_read.py")),
+        python_executable=config("python_executable", None),
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
         lane=config("lane", None),
         enabled=bool(config("enabled", False)),
