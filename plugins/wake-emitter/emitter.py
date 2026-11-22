@@ -365,7 +365,7 @@ class WakeEmitter:
         if log is not None and hasattr(log, "info"):
             try:
                 log.info(message)
-            except Exception:
+            except BaseException:
                 pass
 
     # -- public seam -------------------------------------------------------
@@ -375,11 +375,38 @@ class WakeEmitter:
             self._log("wake-emitter disabled; no event emitted")
             return "DISABLED"
         try:
-            return self._on_session_end_enabled(payload)
-        finally:
-            # Liveness signal: written on every enabled invocation, including a
-            # skipped one. A failure here is swallowed so it cannot block delivery.
+            outcome = self._on_session_end_enabled(payload)
+        except BaseException as exc:
+            # The enabled path is component code over files, locks and a
+            # subprocess; any escaped fault becomes a status string, never a
+            # raise into the turn_finalizer hook call.
+            outcome = "INTERNAL_ERROR:%s" % type(exc).__name__
+            self._record_internal_error(payload, exc)
+        # Liveness signal, written last so it can never mask or replace the
+        # primary outcome. A BaseException here is swallowed too.
+        try:
             self._write_status()
+        except BaseException:
+            pass
+        return outcome
+
+    def _record_internal_error(self, payload, exc):
+        """Best-effort durable record of an escaped fault. Never raises."""
+        outcome = "INTERNAL_ERROR:%s" % type(exc).__name__
+        try:
+            event_id = None
+            turn_id = payload.get("turn_id")
+            if turn_id:
+                for row in self._rows():
+                    if row.get("kind") == "event" and row.get("turn_id") == turn_id:
+                        event_id = row.get("event_id")
+                        break
+            self._record(event_id or str(uuid.uuid4()), outcome)
+        except BaseException as record_exc:
+            # The journal itself is unwritable: fall back to the logger and
+            # still return the status string.
+            self._log("wake-emitter internal error %s: %s (status not recorded: %s: %s)"
+                      % (type(exc).__name__, exc, type(record_exc).__name__, record_exc))
 
     def _on_session_end_enabled(self, payload):
         # Reconcile earlier deliveries first: this invocation was happening anyway,
@@ -733,7 +760,7 @@ class WakeEmitter:
                 "total_failed": failed,
             }
             self._atomic_write_json(self.status_path, record)
-        except Exception:
+        except BaseException:
             pass
 
     @staticmethod
