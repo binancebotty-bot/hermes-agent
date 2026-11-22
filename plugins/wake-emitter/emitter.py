@@ -353,22 +353,27 @@ def _ack_reply_half(text):
 
 
 def _is_our_outbound(text, candidate, sent_text=None):
-    """True when a pane turn is our own outbound payload, never a peer reply.
+    """True when the judged block of a turn is our own outbound payload.
 
-    The strict envelope form is restored over the WHOLE block: extraction must
-    not strip the marker that identifies our own message. The instruction line
-    and the sender line are equally ours even without an envelope marker.
+    With the separator present only the reply half is judged: our envelope sits
+    in the outbound half, so it must neither mask a genuine reply nor settle
+    itself - a reply half that IS our payload is still caught here. Without a
+    separator the strict envelope form is restored over the WHOLE block, so
+    extraction cannot strip the marker that identifies our own message. The
+    instruction line and the sender line are equally ours even without an
+    envelope marker.
     """
     if not isinstance(text, str) or not text:
         return False
-    if any(marker in text for marker in ENVELOPE_MARKERS):
+    block = text.rsplit(REPLY_SPLIT, 1)[-1] if REPLY_SPLIT in text else text
+    if any(marker in block for marker in ENVELOPE_MARKERS):
         return True
     if candidate:
         if SELF_ACK_PHRASE in candidate:
             return True
         if any(marker in candidate for marker in SENDER_LINE_MARKERS):
             return True
-    if sent_text and sent_text in text:
+    if sent_text and sent_text in block:
         return True
     return False
 

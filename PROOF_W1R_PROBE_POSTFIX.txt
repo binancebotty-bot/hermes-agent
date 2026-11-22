@@ -1,0 +1,25 @@
+construction                                             cand   noSep 
+------------------------------------------------------------------------
+combined: two-line envelope + SEP + genuine ACK          True   False 
+combined: one-line envelope + SEP + genuine ACK          True   False 
+combined: bare nonce delivery + SEP + genuine ACK        True   False 
+two-line payload alone                                   False  False 
+one-line payload alone                                   False  False 
+line 2 alone                                             False  False 
+quoted-back two-line (SEP)                               False  False 
+quoted-back line 2 (SEP)                                 False  False 
+line 2 + SEP + empty                                     False  False 
+two-line + SEP (nothing after)                           False  False 
+quote line2 (angle) then ACK, no SEP                     False  False 
+quote line2 (quote-amp) then ACK, no SEP                 False  False 
+quote line2 then ACK, with SEP                           True   False 
+quote two-line then ACK, no SEP                          False  False 
+quote two-line then ACK, with SEP                        True   False 
+quote two-line then ACK, SEP then quote again            False  False 
+peer text 'You said ... ' then ACK                       False  False 
+peer quotes line2 then ACK same line block, no SEP       False  False 
+genuine ACK alone                                        True   False 
+genuine ACK after separator only                         True   False 
+
+reply half of combined two-line+SEP: '\nWAKE-ACK 11111111-1111-4111-8111-111111111111'
+_is_our_outbound on that whole block: False
