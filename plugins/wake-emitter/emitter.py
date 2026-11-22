@@ -39,6 +39,19 @@ ACKED_ORDER_ONLY = "ACKED_ORDER_ONLY"
 # Clock skew tolerated when binding ACK turn time to delivery time. Named config,
 # not a literal buried in the sweep: operators set it via ack_skew_seconds.
 ACK_SKEW_SECONDS = 30.0
+# W1h: settlement needs the nonce AND the keyword we asked the peer to send.
+WAKE_ACK_KEYWORD = "WAKE-ACK"
+ACK_KEYWORD_MISSING = "ACK_KEYWORD_MISSING"
+# Bounded life for every unproven ACK outcome (named config, not literals).
+ACK_UNPROVEN_MAX_SWEEPS = 5
+ACK_UNPROVEN_MAX_SECONDS = 900.0
+ACK_UNPROVEN_EXPIRED = "ACK_UNPROVEN_EXPIRED"
+ACK_UNPROVEN_OUTCOMES = frozenset((ACK_DELIVERY_UNPROVEN, ACK_TIME_UNPROVEN,
+                                   ACK_BEFORE_DELIVERY, ACK_KEYWORD_MISSING))
+# A settlement label is only valid with its own binding proof.
+ACK_PAIRING_INVALID = "ACK_PAIRING_INVALID"
+VALID_ACK_PAIRS = frozenset((("DELIVERED_ACKED", "time_verified"),
+                             (ACKED_ORDER_ONLY, "order_only")))
 # Exactly one wider pane window is allowed when a reply's delivery turn is
 # truncated out of the readback; it shares the existing ACK sweep deadline.
 ACK_REREAD_WINDOW = 400
@@ -305,19 +318,56 @@ RECONCILE_TIMEOUT_SECONDS = 60.0
 SENDER_TIMEOUT_SECONDS = 120.0
 
 
-def _ack_candidate(text, event_id):
-    """True when ``text`` is a reply carrying ``event_id``, never our own envelope.
+def _has_wake_ack(text):
+    """The keyword we asked the peer to reply with, case-insensitive."""
+    return WAKE_ACK_KEYWORD.lower() in text.lower()
 
-    A block that embeds both our message and the reply is split at the last
-    ``ChatGPT said:`` and only the reply half is considered; text that still carries
-    an envelope marker after the split is rejected.
+
+def _ack_reply_half(text):
+    """Reply half of a turn, or None for a non-string/empty turn.
+
+    With the separator present only the part after the last ``ChatGPT said:``
+    counts. Without it, a combined block is usable only when it carries a
+    keyword ACK line: that line, not our envelope, is the reply half. A block
+    that is only our own envelope yields the whole text and is rejected by the
+    envelope check below.
     """
     if not isinstance(text, str) or not text:
+        return None
+    if REPLY_SPLIT in text:
+        return text.rsplit(REPLY_SPLIT, 1)[-1]
+    if _has_wake_ack(text):
+        return "\n".join(line for line in text.splitlines() if _has_wake_ack(line))
+    return text
+
+
+def _ack_candidate(text, event_id):
+    """True when ``text`` is a reply carrying the nonce AND the wake-ack keyword."""
+    candidate = _ack_reply_half(text)
+    if candidate is None:
         return False
-    candidate = text.rsplit(REPLY_SPLIT, 1)[-1] if REPLY_SPLIT in text else text
     if any(marker in candidate for marker in ENVELOPE_MARKERS):
         return False
-    return event_id in candidate
+    return event_id in candidate and _has_wake_ack(candidate)
+
+
+def _ack_nonce_without_keyword(text, event_id):
+    """Nonce present in the reply half but the required keyword is missing."""
+    candidate = _ack_reply_half(text)
+    if candidate is None:
+        return False
+    if any(marker in candidate for marker in ENVELOPE_MARKERS):
+        return False
+    return event_id in candidate and not _has_wake_ack(candidate)
+
+
+def _ack_without_separator(text):
+    """True for a combined block resolvable by keyword line, with no separator."""
+    if not isinstance(text, str) or REPLY_SPLIT in text or not _has_wake_ack(text):
+        return False
+    half = _ack_reply_half(text)
+    return (half != text and _has_wake_ack(half)
+            and not any(marker in half for marker in ENVELOPE_MARKERS))
 
 
 def _delivery_candidate(text, event_id):
@@ -383,7 +433,8 @@ def _ack_turn_index(turns, event_id):
         if delivery_index is not None:
             if index < delivery_index:
                 continue
-            if index == delivery_index and REPLY_SPLIT not in text:
+            if (index == delivery_index and REPLY_SPLIT not in text
+                    and not _ack_without_separator(text)):
                 continue
         return index
     return None
@@ -488,6 +539,8 @@ class WakeEmitter:
 
     def __init__(self, *, journal_path, peer_map_path, sender_path, pane_read_path=None,
                  ack_horizon_seconds=ACK_HORIZON_SECONDS, ack_skew_seconds=ACK_SKEW_SECONDS,
+                 ack_unproven_max_sweeps=ACK_UNPROVEN_MAX_SWEEPS,
+                 ack_unproven_max_seconds=ACK_UNPROVEN_MAX_SECONDS,
                  lane=None, enabled=False, logger=None,
                  lock_timeout_seconds=None, scope=None, python_executable=None,
                  hook_budget_seconds=HOOK_BUDGET_SECONDS,
@@ -505,6 +558,8 @@ class WakeEmitter:
         )
         self.ack_horizon_seconds = float(ack_horizon_seconds)
         self.ack_skew_seconds = float(ack_skew_seconds)
+        self.ack_unproven_max_sweeps = int(ack_unproven_max_sweeps)
+        self.ack_unproven_max_seconds = float(ack_unproven_max_seconds)
         self.lane = lane
         self.enabled = bool(enabled)
         self.scope = scope
@@ -1061,6 +1116,8 @@ class WakeEmitter:
         ``outcome``/``ack_binding`` let a timestamp-less readback settle as
         ACKED_ORDER_ONLY without ever being confused with a time-verified ACK.
         """
+        if (outcome, ack_binding) not in VALID_ACK_PAIRS:
+            return ACK_PAIRING_INVALID
         if not any(row.get("kind") == "event" and row.get("event_id") == event_id for row in self._rows()):
             return False
         row = {"kind": "outcome", "event_id": event_id, "utc": _utc_now(),
@@ -1190,6 +1247,19 @@ class WakeEmitter:
                 break
             event_id = row["event_id"]
             pending = latest.get(event_id) == DELIVERY_PENDING
+            if latest.get(event_id) in ACK_UNPROVEN_OUTCOMES:
+                unproven_rows = [r for r in rows
+                                 if r.get("kind") == "outcome"
+                                 and r.get("event_id") == event_id
+                                 and r.get("outcome") in ACK_UNPROVEN_OUTCOMES]
+                sweeps = len(unproven_rows)
+                elapsed = self._age_seconds(unproven_rows[0]) if unproven_rows else None
+                if (sweeps >= self.ack_unproven_max_sweeps
+                        or (elapsed is not None
+                            and elapsed >= self.ack_unproven_max_seconds)):
+                    self._record(event_id, ACK_UNPROVEN_EXPIRED,
+                                 {"sweeps": sweeps, "elapsed_seconds": elapsed})
+                    continue
             if self._consecutive_ack_errors(rows, event_id) >= ACK_MAX_ERRORS:
                 # Retry budget exhausted: record the terminal give-up once and stop
                 # retrying this event, so a broken observer cannot grow the journal.
@@ -1248,11 +1318,15 @@ class WakeEmitter:
                     and _delivery_turn_index(turns, event_id) is None):
                 # The delivery turn is still absent after the one wider read:
                 # the reply is unproven, not a nonce-only settlement.
-                if latest.get(event_id) != ACK_DELIVERY_UNPROVEN:
-                    self._record(event_id, ACK_DELIVERY_UNPROVEN,
-                                 {"lane": lane, "conversation_id": delivery["conv"]})
+                self._record(event_id, ACK_DELIVERY_UNPROVEN,
+                             {"lane": lane, "conversation_id": delivery["conv"]})
                 continue
             matched = _ack_turn_index(turns, event_id)
+            if matched is None and any(
+                    _ack_nonce_without_keyword(t, event_id) for t in texts):
+                self._record(event_id, ACK_KEYWORD_MISSING,
+                             {"lane": lane, "conversation_id": delivery["conv"]})
+                continue
             if matched is not None:
                 ack_utc = _turn_utc(turns[matched])
                 # Capability belongs to the READBACK, not to one turn: a pane
@@ -1279,9 +1353,8 @@ class WakeEmitter:
                 else:
                     proof = None
                 if proof is not None:
-                    if latest.get(event_id) != proof:
-                        self._record(event_id, proof,
-                                     {"delivery_utc": delivery["utc"], "ack_utc": ack_utc})
+                    self._record(event_id, proof,
+                                 {"delivery_utc": delivery["utc"], "ack_utc": ack_utc})
                 else:
                     digest = hashlib.sha256(texts[matched].encode("utf-8")).hexdigest()[:12]
                     self.record_assistant_ack(
@@ -1294,9 +1367,8 @@ class WakeEmitter:
                 # Delivery anchor is present but the ACK is not after it in
                 # turn order: refuse explicitly (the only anchor available to
                 # a timestamp-less readback is order).
-                if latest.get(event_id) != ACK_BEFORE_DELIVERY:
-                    self._record(event_id, ACK_BEFORE_DELIVERY,
-                                 {"delivery_turn_present": True, "ack_after_delivery": False})
+                self._record(event_id, ACK_BEFORE_DELIVERY,
+                             {"delivery_turn_present": True, "ack_after_delivery": False})
             elif pending and _delivery_present(texts, event_id):
                 self._record(event_id, "DELIVERED_UNCONFIRMED")
             else:
@@ -1345,6 +1417,15 @@ class WakeEmitter:
                          if self._is_failure_outcome(latest.get(event_id, {}).get("outcome")))
             last_event = events[-1] if events else None
             last_outcome = outcomes[-1] if outcomes else None
+            outcome_counts = {}
+            for event_id in event_ids:
+                label = latest.get(event_id, {}).get("outcome")
+                if label:
+                    outcome_counts[label] = outcome_counts.get(label, 0) + 1
+            ack_label = None
+            for row in outcomes:
+                if row.get("outcome") in ("DELIVERED_ACKED", ACKED_ORDER_ONLY):
+                    ack_label = row.get("outcome")
             record = {
                 "last_event_utc": last_event.get("utc") if last_event else None,
                 "last_outcome": last_outcome.get("outcome") if last_outcome else None,
@@ -1352,6 +1433,10 @@ class WakeEmitter:
                 "total_events": len(events),
                 "total_acked": acked,
                 "total_failed": failed,
+                "ack_label": ack_label,
+                "outcome_counts": outcome_counts,
+                "ack_unproven_max_sweeps": self.ack_unproven_max_sweeps,
+                "ack_unproven_max_seconds": self.ack_unproven_max_seconds,
             }
             self._atomic_write_json(self.status_path, record)
         except BaseException:
@@ -1464,6 +1549,8 @@ def build_from_ctx(ctx):
         python_executable=config("python_executable", None),
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
         ack_skew_seconds=config("ack_skew_seconds", ACK_SKEW_SECONDS),
+        ack_unproven_max_sweeps=config("ack_unproven_max_sweeps", ACK_UNPROVEN_MAX_SWEEPS),
+        ack_unproven_max_seconds=config("ack_unproven_max_seconds", ACK_UNPROVEN_MAX_SECONDS),
         hook_budget_seconds=config("hook_budget_seconds", HOOK_BUDGET_SECONDS),
         retry_horizon_seconds=config("retry_horizon_seconds", RETRY_HORIZON_SECONDS),
         binding_path=config("binding_path",

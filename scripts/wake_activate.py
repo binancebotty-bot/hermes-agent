@@ -712,6 +712,15 @@ def status(paths):
     config = load_config(paths.config) if paths.config.is_file() else None
     flag = read_flag(config)
     record = read_record(paths.record)
+    emitter_ack = {}
+    try:
+        ack_path = paths.journal.with_name(paths.journal.stem + ".status.json")
+        if ack_path.is_file():
+            data = json.loads(ack_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                emitter_ack = data
+    except (OSError, json.JSONDecodeError):
+        pass
     out = {
         "utc": utc_now(), "plugin_id": PLUGIN_ID, "lane": paths.lane,
         "flag_state": flag["flag_state"],
@@ -724,6 +733,7 @@ def status(paths):
             "installed_hashes": tree_hashes(paths.dst),
         },
         "activation_record": record,
+        "emitter_ack": emitter_ack,
         "yaml_lib": YAML_LIB,
     }
     return out

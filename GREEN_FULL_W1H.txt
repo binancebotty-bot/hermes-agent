@@ -1,0 +1,94 @@
+........................................................................ [ 43%]
+...............................................................FFF...... [ 87%]
+....................                                                     [100%]
+================================== FAILURES ===================================
+____ test_preflight_refuses_on_inconsistent_state_reports_which_disagrees _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10212/test_preflight_refuses_on_inco0')
+
+    def test_preflight_refuses_on_inconsistent_state_reports_which_disagrees(tmp_path):
+        """Pre-flight check refuses to proceed on inconsistent state, reports which of three disagrees."""
+        fx = build_home(tmp_path, config_text=FIXTURE_CONFIG)
+    
+        # Apply first
+        proc = run_tool(fx, ["--apply"])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    
+        # Manually create inconsistent state: remove from enabled list but keep settings.enabled=true and dir exists
+        cfg = yaml.safe_load(fx.config.read_text(encoding="utf-8"))
+        cfg["plugins"]["enabled"] = [p for p in cfg["plugins"]["enabled"] if p != "wake-emitter"]
+        # Keep settings.enabled=true
+        import ruamel.yaml
+        yaml_handle = ruamel.yaml.YAML(typ="rt")
+        yaml_handle.preserve_quotes = True
+        yaml_handle.default_flow_style = False
+        yaml_handle.indent(mapping=2, sequence=4, offset=2)
+        with open(fx.config, "w", encoding="utf-8") as f:
+            yaml_handle.dump(cfg, f)
+    
+        # Now try rollback - should refuse and report inconsistency
+        proc = run_tool(fx, ["--rollback"])
+        # Should fail with clear message about which of the three disagrees
+>       assert proc.returncode != 0, f"Expected refusal, got {proc.returncode}: {proc.stdout}"
+E       AssertionError: Expected refusal, got 0:   config restored from C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-10212\test_preflight_refuses_on_inco0\home\.hermes\config.yaml.wake-backup-20261122T170115Z
+E           plugin moved aside: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-10212\test_preflight_refuses_on_inco0\home\.hermes\plugins\wake-emitter.rolledback-20261122T170115Z
+E         RESULT {"action": "rollback", "state": "rolled_back", "verified": true, "config_hash_matches": true, "plugin_dir_absent": true, "config_sha256": "096ccd06b347640ce246545acf128d004d8bfd9e70515a60ffb91d654081326c"}
+E         
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc..._dir_absent": true, "config_sha256": "096ccd06b347640ce246545acf128d004d8bfd9e70515a60ffb91d654081326c"}\n', stderr='').returncode
+
+tests\test_w1g_byte_exact.py:331: AssertionError
+____________ test_dry_run_shows_before_after_hashes_and_diff_count ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10212/test_dry_run_shows_before_afte0')
+
+    def test_dry_run_shows_before_after_hashes_and_diff_count(tmp_path):
+        """Dry-run prints intended before/after hashes and diff line count."""
+        fx = build_home(tmp_path, config_text=FIXTURE_CONFIG)
+        pre_hash = sha(fx.config)
+    
+        # Run with --verify (dry-run mode)
+        proc = run_tool(fx, ["--verify"])
+>       assert proc.returncode == 0, f"Verify failed: {proc.stdout} {proc.stderr}"
+E       AssertionError: Verify failed:  usage: wake_activate.py [-h] [--home HOME] [--source SOURCE] [--repo REPO]
+E                                 [--lane LANE] [--python-executable PYTHON_EXECUTABLE]
+E                                 [--expected-sha EXPECTED_SHA]
+E                                 [--expected-config-sha EXPECTED_CONFIG_SHA] [--apply]
+E                                 [--rollback] [--status] [--dry-run] [--rehearse]
+E         wake_activate.py: error: unrecognized arguments: --verify
+E         
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...        [--rollback] [--status] [--dry-run] [--rehearse]\nwake_activate.py: error: unrecognized arguments: --verify\n').returncode
+
+tests\test_w1g_byte_exact.py:351: AssertionError
+_____________ test_dry_run_shows_zero_diff_when_no_change_needed ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10212/test_dry_run_shows_zero_diff_w0')
+
+    def test_dry_run_shows_zero_diff_when_no_change_needed(tmp_path):
+        """Dry-run on already-applied config shows 0 diff lines."""
+        fx = build_home(tmp_path, config_text=FIXTURE_CONFIG)
+    
+        # Apply first
+        proc = run_tool(fx, ["--apply"])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    
+        # Now dry-run should show 0 diff
+        proc = run_tool(fx, ["--verify"])
+>       assert proc.returncode == 0, f"Verify failed: {proc.stdout} {proc.stderr}"
+E       AssertionError: Verify failed:  usage: wake_activate.py [-h] [--home HOME] [--source SOURCE] [--repo REPO]
+E                                 [--lane LANE] [--python-executable PYTHON_EXECUTABLE]
+E                                 [--expected-sha EXPECTED_SHA]
+E                                 [--expected-config-sha EXPECTED_CONFIG_SHA] [--apply]
+E                                 [--rollback] [--status] [--dry-run] [--rehearse]
+E         wake_activate.py: error: unrecognized arguments: --verify
+E         
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...        [--rollback] [--status] [--dry-run] [--rehearse]\nwake_activate.py: error: unrecognized arguments: --verify\n').returncode
+
+tests\test_w1g_byte_exact.py:380: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_w1g_byte_exact.py::test_preflight_refuses_on_inconsistent_state_reports_which_disagrees
+FAILED tests/test_w1g_byte_exact.py::test_dry_run_shows_before_after_hashes_and_diff_count
+FAILED tests/test_w1g_byte_exact.py::test_dry_run_shows_zero_diff_when_no_change_needed
+3 failed, 161 passed in 45.97s

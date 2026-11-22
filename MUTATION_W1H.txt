@@ -1,0 +1,8 @@
+M1 revert keyword requirement | exit=1 | 1 failed, 7 passed in 1.11s
+    FAILED tests/test_w1h_ack_settlement.py::test_1_nonce_without_keyword_records_ack_keyword_missing
+M2 remove unproven expiry | exit=1 | 2 failed, 6 passed in 0.98s
+    FAILED tests/test_w1h_ack_settlement.py::test_2a_sweep_count_expires_delivery_unproven
+    FAILED tests/test_w1h_ack_settlement.py::test_2b_elapsed_time_expires_unproven
+M3 unenforce pairing | exit=1 | 1 failed, 7 passed in 2.97s
+    FAILED tests/test_w1h_ack_settlement.py::test_3_pairing_rejects_both_mismatched_directions
+RESTORED GREEN | exit=0 | ['8 passed in 0.75s']

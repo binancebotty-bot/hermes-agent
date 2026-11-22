@@ -1,0 +1,180 @@
+FFFFFFF.                                                                 [100%]
+================================== FAILURES ===================================
+__________ test_1_nonce_without_keyword_records_ack_keyword_missing ___________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_1_nonce_without_keyword_r0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CDFA2F5890>
+
+    def test_1_nonce_without_keyword_records_ack_keyword_missing(tmp_path, monkeypatch):
+        """A reply carrying only the nonce must not settle and must be visible."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1h-keyword")
+        turns = [_untimed("EVENT-ID: " + eid),
+                 _untimed("noted, will look at %s later" % eid)]
+        _sweep(worker, monkeypatch, turns)
+    
+        names = _outcome_names(journal, eid)
+>       assert KEYWORD_MISSING in names, \
+            "nonce without WAKE-ACK must record %s: %s" % (KEYWORD_MISSING, names)
+E       AssertionError: nonce without WAKE-ACK must record ACK_KEYWORD_MISSING: ['DELIVERED_UNACKED', 'ACKED_ORDER_ONLY']
+E       assert 'ACK_KEYWORD_MISSING' in ['DELIVERED_UNACKED', 'ACKED_ORDER_ONLY']
+
+tests\test_w1h_ack_settlement.py:70: AssertionError
+________________ test_2a_sweep_count_expires_delivery_unproven ________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_2a_sweep_count_expires_de0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CDFA2F4490>
+
+    def test_2a_sweep_count_expires_delivery_unproven(tmp_path, monkeypatch):
+        """The pre-empted branch: ACK_DELIVERY_UNPROVEN must still be able to expire."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1h-sweeps")
+        worker.ack_unproven_max_sweeps = 2
+        worker.ack_unproven_max_seconds = 1.0e9
+        turns = [_untimed("WAKE-ACK " + eid)]  # reply, no delivery anchor
+    
+        for _ in range(5):
+            _sweep(worker, monkeypatch, turns)
+    
+        names = _outcome_names(journal, eid)
+>       assert names[-1] == UNPROVEN_EXPIRED, \
+            "a bounded number of unproven sweeps must expire terminally: %s" % names
+E       AssertionError: a bounded number of unproven sweeps must expire terminally: ['DELIVERED_UNACKED', 'ACK_DELIVERY_UNPROVEN']
+E       assert 'ACK_DELIVERY_UNPROVEN' == 'ACK_UNPROVEN_EXPIRED'
+E         
+E         - ACK_UNPROVEN_EXPIRED
+E         + ACK_DELIVERY_UNPROVEN
+
+tests\test_w1h_ack_settlement.py:90: AssertionError
+____________________ test_2b_elapsed_time_expires_unproven ____________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_2b_elapsed_time_expires_u0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CDFA2DFA90>
+
+    def test_2b_elapsed_time_expires_unproven(tmp_path, monkeypatch):
+        """An old unproven outcome expires on elapsed time, not sweep count."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1h-elapsed")
+        worker.ack_unproven_max_sweeps = 99
+        worker.ack_unproven_max_seconds = 1.0
+        turns = [_untimed("WAKE-ACK " + eid)]
+        _sweep(worker, monkeypatch, turns)
+    
+        # Synthesised fixture: age the unproven row past the named elapsed limit.
+        stale = "2020-01-01T00:00:00Z"
+        rows = _rows(journal)
+        for row in rows:
+            if row.get("kind") == "outcome" and row.get("outcome") == "ACK_DELIVERY_UNPROVEN":
+                row["utc"] = stale
+        journal.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    
+        _sweep(worker, monkeypatch, turns)
+        names = _outcome_names(journal, eid)
+>       assert names[-1] == UNPROVEN_EXPIRED, \
+            "an unproven outcome past the elapsed limit must expire: %s" % names
+E       AssertionError: an unproven outcome past the elapsed limit must expire: ['DELIVERED_UNACKED', 'ACK_DELIVERY_UNPROVEN']
+E       assert 'ACK_DELIVERY_UNPROVEN' == 'ACK_UNPROVEN_EXPIRED'
+E         
+E         - ACK_UNPROVEN_EXPIRED
+E         + ACK_DELIVERY_UNPROVEN
+
+tests\test_w1h_ack_settlement.py:113: AssertionError
+______________ test_3_pairing_rejects_both_mismatched_directions ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_3_pairing_rejects_both_mi0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CDFA2CEC50>
+
+    def test_3_pairing_rejects_both_mismatched_directions(tmp_path, monkeypatch):
+        """record_assistant_ack refuses ACKED_ORDER_ONLY/time_verified and reverse."""
+        worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1h-pairing")
+        before = len(_outcomes(journal, eid))
+    
+        bad_order = worker.record_assistant_ack(
+            eid, outcome="ACKED_ORDER_ONLY", ack_binding="time_verified")
+        bad_time = worker.record_assistant_ack(
+            eid, outcome="DELIVERED_ACKED", ack_binding="order_only")
+    
+>       assert bad_order == PAIRING_INVALID, \
+            "order-only label with time_verified binding must be refused: %r" % (bad_order,)
+E       AssertionError: order-only label with time_verified binding must be refused: True
+E       assert True == 'ACK_PAIRING_INVALID'
+
+tests\test_w1h_ack_settlement.py:130: AssertionError
+_________ test_4a_emitter_status_reports_ack_label_and_outcome_counts _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_4a_emitter_status_reports0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CDFA2B83D0>
+
+    def test_4a_emitter_status_reports_ack_label_and_outcome_counts(tmp_path, monkeypatch):
+        """The liveness status record exposes labels and per-outcome counts."""
+        worker, journal, eid1, _ = _deliver(tmp_path, monkeypatch, "w1h-status-a")
+        assert worker.record_assistant_ack(
+            eid1, outcome="ACKED_ORDER_ONLY", ack_binding="order_only") is True
+    
+        _bind(worker, "w1h-status-b", conv=CONV_B, generation=GEN)
+        assert worker.on_session_end(
+            **_payload("w1h-status-b", turn_id="turn-b")) == "DELIVERED_UNACKED"
+        eid2 = [r for r in _rows(journal) if r.get("kind") == "event"][-1]["event_id"]
+        assert worker.record_assistant_ack(eid2) is True
+    
+        worker._write_status()
+        record = json.loads(worker.status_path.read_text(encoding="utf-8"))
+        counts = record.get("outcome_counts", {})
+>       assert counts.get("ACKED_ORDER_ONLY") == 1, \
+            "--status must count ACKED_ORDER_ONLY separately: %s" % counts
+E       AssertionError: --status must count ACKED_ORDER_ONLY separately: {}
+E       assert None == 1
+E        +  where None = <built-in method get of dict object at 0x000001CDFA2B9B00>('ACKED_ORDER_ONLY')
+E        +    where <built-in method get of dict object at 0x000001CDFA2B9B00> = {}.get
+
+tests\test_w1h_ack_settlement.py:155: AssertionError
+___________________ test_4b_cli_status_surfaces_emitter_ack ___________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_4b_cli_status_surfaces_em0')
+
+    def test_4b_cli_status_surfaces_emitter_ack(tmp_path):
+        """python wake_activate.py --status shows the ACK label and counts."""
+        fx = build_home(tmp_path)
+        status_file = fx.journal.with_name("event_outbox.status.json")
+        status_file.write_text(json.dumps({
+            "ack_label": "ACKED_ORDER_ONLY",
+            "outcome_counts": {"ACKED_ORDER_ONLY": 1, "DELIVERED_ACKED": 2},
+            "ack_unproven_max_sweeps": 5,
+            "ack_unproven_max_seconds": 900.0,
+        }), encoding="utf-8")
+    
+        st = status_json(fx)
+        ack = st.get("emitter_ack", {})
+>       assert ack.get("ack_label") == "ACKED_ORDER_ONLY", \
+            "--status must surface the ACK label: %s" % ack
+E       AssertionError: --status must surface the ACK label: {}
+E       assert None == 'ACKED_ORDER_ONLY'
+E        +  where None = <built-in method get of dict object at 0x000001CDFA333180>('ack_label')
+E        +    where <built-in method get of dict object at 0x000001CDFA333180> = {}.get
+
+tests\test_w1h_ack_settlement.py:178: AssertionError
+______________ test_5_combined_block_without_separator_keeps_ack ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10207/test_5_combined_block_without_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CDFA347E50>
+
+    def test_5_combined_block_without_separator_keeps_ack(tmp_path, monkeypatch):
+        """Envelope marker + keyword ACK line in one block still settles."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1h-combined")
+        combined = "EVENT-ID: %s\nWAKE-ACK %s" % (eid, eid)
+        _sweep(worker, monkeypatch, [_untimed(combined)])
+    
+        names = _outcome_names(journal, eid)
+>       assert any(name in SETTLED for name in names), \
+            "a keyword ACK line inside a combined block must not be lost: %s" % names
+E       AssertionError: a keyword ACK line inside a combined block must not be lost: ['DELIVERED_UNACKED']
+E       assert False
+E        +  where False = any(<generator object test_5_combined_block_without_separator_keeps_ack.<locals>.<genexpr> at 0x000001CDFA27B2A0>)
+
+tests\test_w1h_ack_settlement.py:195: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_w1h_ack_settlement.py::test_1_nonce_without_keyword_records_ack_keyword_missing
+FAILED tests/test_w1h_ack_settlement.py::test_2a_sweep_count_expires_delivery_unproven
+FAILED tests/test_w1h_ack_settlement.py::test_2b_elapsed_time_expires_unproven
+FAILED tests/test_w1h_ack_settlement.py::test_3_pairing_rejects_both_mismatched_directions
+FAILED tests/test_w1h_ack_settlement.py::test_4a_emitter_status_reports_ack_label_and_outcome_counts
+FAILED tests/test_w1h_ack_settlement.py::test_4b_cli_status_surfaces_emitter_ack
+FAILED tests/test_w1h_ack_settlement.py::test_5_combined_block_without_separator_keeps_ack
+7 failed, 1 passed in 1.55s
