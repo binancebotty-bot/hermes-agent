@@ -1,0 +1,165 @@
+"""``--tools``: the Hermes tool surface on the MCP wire, gated off by default and limited to the
+curated allowlist (never terminal/file/kanban), dispatched through Hermes' real tool registry."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from mcp_serve_plugin import bridge, hermes_tools
+
+_BRIDGE_TOOLS = set(bridge._TOOL_NAMES)
+
+
+def _listed(server) -> dict:
+    return {t.name: t for t in asyncio.run(server.list_tools())}
+
+
+@pytest.fixture
+def real_tools(monkeypatch, require_mcp_2_sdk):
+    """Real core registry, with two allowlisted tools and two dangerous ones made available."""
+    import model_tools
+
+    params = {"type": "object", "properties": {
+        "query": {"type": "string", "description": "what to look for"},
+        "limit": {"type": "integer"}, "url": {"type": "string"}, "image_url": {"type": "string"},
+        "output_path": {"type": "string"}}, "required": ["query"]}
+    defs = [{"type": "function", "function": {"name": n, "description": f"{n} desc", "parameters": params}}
+            for n in ("web_search", "skills_list", "web_extract", "vision_analyze", "text_to_speech",
+                      "terminal", "kanban_create")]
+    calls = []
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **_: defs)
+    monkeypatch.setattr(model_tools, "handle_function_call",
+                        lambda name, args, *a, **k: calls.append((name, args)) or json.dumps({"ok": name}))
+    return calls
+
+
+def test_default_server_exposes_only_the_bridge(real_tools):
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge())
+    assert set(_listed(server)) == _BRIDGE_TOOLS
+
+
+def test_tools_mode_adds_only_allowlisted_available_tools(real_tools):
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True)
+    listed = _listed(server)
+    assert set(listed) == _BRIDGE_TOOLS | {"web_search", "skills_list", "web_extract", "vision_analyze",
+                                           "text_to_speech"}
+    assert "terminal" not in listed and "kanban_create" not in listed
+    schema = listed["web_search"].input_schema  # Hermes' own schema, descriptions included
+    assert schema["required"] == ["query"] and schema["properties"]["query"]["description"] == "what to look for"
+    assert "output_path" not in listed["text_to_speech"].input_schema["properties"]
+
+
+def test_tools_mode_dispatches_through_handle_function_call(real_tools):
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True)
+    result = asyncio.run(server.call_tool("web_search", {"query": "hermes"}))
+    text = "".join(getattr(block, "text", "") for block in (getattr(result, "content", None) or []))
+    assert real_tools == [("web_search", {"query": "hermes"})]  # unset optional `limit` not forwarded
+    assert json.loads(text) == {"ok": "web_search"}
+
+
+def test_tools_only_mode_serves_the_face_without_the_bridge(real_tools):
+    """--tools-only: the curated Hermes tools, none of the ten messaging/approval bridge tools."""
+    server = bridge.create_mcp_server(tools_only=True)
+    listed = _listed(server)
+    with_bridge = _listed(bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True))
+    assert listed and set(listed) == set(with_bridge) - _BRIDGE_TOOLS
+    assert not set(listed) & _BRIDGE_TOOLS
+    assert "terminal" not in listed and "kanban_create" not in listed
+
+
+def test_tools_only_wins_over_include_tools(real_tools):
+    """--tools --tools-only is the safe composition: the bridge is never registered."""
+    server = bridge.create_mcp_server(include_tools=True, tools_only=True)
+    assert not set(_listed(server)) & _BRIDGE_TOOLS
+    assert "web_search" in _listed(server)
+
+
+def _call(server, name, args):
+    result = asyncio.run(server.call_tool(name, args))
+    return json.loads("".join(getattr(b, "text", "") for b in (getattr(result, "content", None) or [])))
+
+
+@pytest.mark.parametrize(("tool", "args"), [
+    ("vision_analyze", {"query": "q", "image_url": "file:///home/me/notes.txt"}),
+    ("vision_analyze", {"query": "q", "image_url": "javascript:alert(1)"}),
+    ("vision_analyze", {"query": "q", "image_url": "/home/me/.hermes/.env"}),
+    ("vision_analyze", {"query": "q", "image_url": "~/secret.png"}),
+    ("vision_analyze", {"query": "q", "image_url": "secret.png"}),
+    ("vision_analyze", {"query": "q", "image_url": "screenshots/secret.png"}),
+])
+def test_tools_mode_refuses_local_files_before_dispatch(real_tools, tool, args):
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True)
+    assert "not local files" in _call(server, tool, args)["error"]
+    assert real_tools == []
+
+
+def test_tools_mode_passes_web_urls_and_drops_output_path(real_tools):
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True)
+    _call(server, "vision_analyze", {"query": "q", "image_url": "https://example.com/image.png"})
+    _call(server, "vision_analyze", {"query": "q", "image_url": "data:image/png;base64,AAAA"})
+    _call(server, "text_to_speech", {"query": "q", "output_path": "/home/me/notes.mp3"})
+    assert real_tools == [
+        ("vision_analyze", {"query": "q", "image_url": "https://example.com/image.png"}),
+        ("vision_analyze", {"query": "q", "image_url": "data:image/png;base64,AAAA"}),
+        ("text_to_speech", {"query": "q"}),
+    ]
+
+
+def test_tools_mode_refuses_bare_host_for_vision(real_tools):
+    """``_URL_ARGS`` keeps the bare-host allowance for ``web_extract`` only: ``vision_analyze``
+    takes an http(s) or data: image, never a bare ``localhost:8080/...`` path."""
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True)
+    assert "not local files" in _call(
+        server, "vision_analyze", {"query": "q", "image_url": "localhost:8080/img.png"})["error"]
+    assert real_tools == []
+
+
+def test_bare_host_allowance_is_web_extract_only():
+    assert hermes_tools._URL_ARGS["web_extract"][2] is True   # allow_bare
+    assert hermes_tools._URL_ARGS["vision_analyze"][2] is False
+
+
+def test_every_exposed_tool_is_a_registered_hermes_tool():
+    """Advertised names must exist in core's registry: --help and README promise them to clients."""
+    from model_tools import get_all_tool_names
+
+    assert set(hermes_tools.EXPOSED_TOOLS) <= set(get_all_tool_names())
+
+
+def test_tools_mode_offers_tool_search_deferred_tools(monkeypatch, require_mcp_2_sdk):
+    """With core's tool_search active, deferred tools are collapsed into its bridge unless the raw
+    catalog is requested; --tools must still offer them (image_generate is in the default deferred set)."""
+    import model_tools
+
+    params = {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}
+
+    def fn(name):
+        return {"type": "function", "function": {"name": name, "description": f"{name} desc", "parameters": params}}
+
+    def get_tool_definitions(skip_tool_search_assembly=False, **_):
+        if skip_tool_search_assembly:
+            return [fn("web_search"), fn("image_generate")]
+        return [fn("web_search"), fn("tool_search"), fn("tool_describe"), fn("tool_call")]
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", get_tool_definitions)
+    server = bridge.create_mcp_server(event_bridge=bridge.EventBridge(), include_tools=True)
+    listed = _listed(server)
+    assert "image_generate" in listed and "web_search" in listed
+    assert not set(listed) & {"tool_search", "tool_describe", "tool_call"}
+
+
+def test_tools_mode_follows_the_profiles_cli_toolsets(tmp_path, monkeypatch, require_mcp_2_sdk):
+    """Real registry: a profile that enabled only the skills toolset for the CLI exposes no web tools."""
+    (tmp_path / "hermes" / "config.yaml").write_text("platform_toolsets:\n  cli: [skills]\n", encoding="utf-8")
+    names = set(hermes_tools.available_tool_specs())
+    assert "skills_list" in names
+    assert not names & {"web_search", "web_extract", "text_to_speech", "image_generate"}
+
+
+def test_allowlist_excludes_shell_reaching_tools():
+    exposed = set(hermes_tools.EXPOSED_TOOLS)
+    assert not exposed & {"terminal", "process", "execute_code", "read_file", "write_file", "patch",
+                          "search_files", "delegate_task", "kanban_create", "kanban_complete"}
