@@ -1,0 +1,15 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\wigmore\.hermes\hermes-agent\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\wigmore\oc-runs\w1-activate-w1
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 5 items
+
+tests/test_w1e_capability_aware.py::test_a_timestamped_ack_after_delivery_is_time_verified PASSED [ 20%]
+tests/test_w1e_capability_aware.py::test_b_untimed_readback_with_ordered_ack_settles_order_only PASSED [ 40%]
+tests/test_w1e_capability_aware.py::test_c_untimed_readback_without_delivery_turn_refuses PASSED [ 60%]
+tests/test_w1e_capability_aware.py::test_d_untimed_ack_before_delivery_in_order_refuses PASSED [ 80%]
+tests/test_w1e_capability_aware.py::test_e_no_readback_call_uses_unsupported_window_flag PASSED [100%]
+
+============================== 5 passed in 0.91s ==============================

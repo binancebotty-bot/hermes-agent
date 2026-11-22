@@ -144,12 +144,15 @@ conversation was written.
    `ack_skew_seconds` (default `ACK_SKEW_SECONDS = 30.0`, operator-settable via
    plugin settings and reported by `--status`). A missing timestamp is
    `ACK_TIME_UNPROVEN`; a timestamp beyond the tolerance is `ACK_BEFORE_DELIVERY`.
-   Both are retryable refusals, never settlements.
+   Both are retryable refusals, never settlements. W1e narrows this strict rule
+   to readbacks that actually supply turn timestamps (see W1e below).
 3. **Window truncation** — a reply found without its delivery turn is no longer
    accepted from the tail alone. One bounded wider read (`ACK_REREAD_WINDOW = 400`,
-   `--window`) is attempted inside the existing ACK sweep deadline; if the delivery
-   turn is still absent, the outcome is `ACK_DELIVERY_UNPROVEN`. The pane record's
-   `utc` is now preserved by `_pane_turns` so real readbacks can bind time.
+   `--window`) is attempted inside the existing ACK sweep deadline **only when the
+   configured readback advertises `--window`** (W1e capability detection); a tool
+   without that flag is never passed it. If the delivery turn is still absent, the
+   outcome is `ACK_DELIVERY_UNPROVEN`. The pane record's `utc` is preserved by
+   `_pane_turns` when the tool supplies one, so capable readbacks can bind time.
 
 `_read_pane_turns` still has two production callers (the ACK sweep and
 `_resume_event`); only the ACK sweep uses the wider-window argument. Graphify
@@ -165,14 +168,17 @@ generation, and an ACK turn timestamp at/after the delivery utc minus
 `ack_skew_seconds`. Proved by `test_a_...` / `test_f_...` in `tests/test_ack_binding.py`,
 `test_a_pending_...` / `test_hook_invocation_...` in `tests/test_pending_reconcile.py`,
 and W1d case (c). Their assertions are unchanged; only the fixtures were upgraded
-to carry the delivery turn and turn timestamp the new gates require.
+to carry the delivery turn and turn timestamp the new gates require. The recorded
+row now also carries `ack_binding: "time_verified"` so this path is auditable apart
+from order-only settlement.
 
 **UNPROVEN / REFUSED — never settle:** peer-map entry absent
-(`ACK_GENERATION_UNKNOWN`, retryable); ACK turn timestamp before delivery beyond
-skew (`ACK_BEFORE_DELIVERY`); ACK turn with no timestamp (`ACK_TIME_UNPROVEN`);
-delivery turn missing from the window even after the one wider read
-(`ACK_DELIVERY_UNPROVEN`); generation rolled after send (`ACK_GENERATION_ROLLED`);
-ACK in a different conversation, ACK before the delivery turn in turn order, or a
+(`ACK_GENERATION_UNKNOWN`, retryable); in a timestamp-supplying readback, an ACK
+timestamp before delivery beyond skew (`ACK_BEFORE_DELIVERY`) or a missing ACK
+timestamp (`ACK_TIME_UNPROVEN`); an ACK ahead of the delivery turn in turn order
+(`ACK_BEFORE_DELIVERY`); delivery turn missing from the window
+(`ACK_DELIVERY_UNPROVEN`, with the wider read only when supported); generation
+rolled after send (`ACK_GENERATION_ROLLED`); ACK in a different conversation, or a
 reply without the nonce (W1c cases (b)/(c)/(d), unchanged). All remain open to a
 later, better readback except the terminal `ACK_GENERATION_ROLLED`.
 
@@ -181,3 +187,47 @@ later, better readback except the terminal `ACK_GENERATION_ROLLED`.
 `PYTEST_EXIT=0` (144 passed = 138 pre-existing + 6 new) — `GREEN_FULL_W1D.txt`.
 Adversarial re-run of the new tests against the untouched `baseline/wake-emitter`
 also fails 6/6 (`PYTEST_EXIT=1`) — `RED_W1D_BASELINE.txt`.
+
+## W1e — capability-aware ACK binding (timestamp-less readbacks settle, labelled)
+
+W1d assumed every ACK turn carries a wall-clock timestamp. The live
+`~/.hermes/scripts/pane_read.py` supplies **no per-turn timestamp** (every turn
+prints as `[unknown] ...`), and no `--window` flag. A strict time gate there would
+record `ACK_TIME_UNPROVEN` forever for a delivery that actually landed and was
+answered, destroying the ACK signal. W1e detects the readback's capability instead
+of silently weakening or permanently refusing:
+
+| Readback capability | Evidence required | Recorded outcome |
+|---|---|---|
+| Turn timestamps present | W1d strict path: ACK time at/after delivery utc minus `ack_skew_seconds` | `DELIVERED_ACKED`, `ack_binding: "time_verified"` |
+| No turn timestamps, delivery turn present, ACK after it in order, nonce on ACK | order + nonce + delivery anchor (no wall clock claimed) | **`ACKED_ORDER_ONLY`**, `ack_binding: "order_only"` |
+| No turn timestamps, delivery turn absent | delivery anchor missing -> no order to trust | `ACK_DELIVERY_UNPROVEN` (refuse, retryable) |
+| No turn timestamps, ACK ahead of delivery turn in order | order violated | `ACK_BEFORE_DELIVERY` (refuse, retryable) |
+| Readback advertises `--window` | one bounded wider read inside the existing sweep deadline, as before | preserved |
+| Readback does not advertise `--window` | no re-read; never pass the unknown flag | same refusals/settlements from the one read |
+
+**What `ACKED_ORDER_ONLY` means to an operator:** the event settled because the
+delivered wake turn and a later nonce-bearing ACK were both present in the same
+readback, in that order — *not* because wall-clock time was verified. It is a
+terminal, auditable settlement with a distinct label; it is never reported as a
+time-verified `DELIVERED_ACKED`. The two paths are distinguishable by both the
+`outcome` and the `ack_binding` field on the outcome row.
+
+One sentence on fields: the strict gate **requires** per-turn `utc`/`timestamp` on
+the delivery and ACK turns (and the frozen delivery `utc` from the write-ahead
+attempt row); the degraded gate **degrades over** wall-clock timestamps and
+requires only turn text order plus the delivery anchor and the event nonce, while
+`--window` is used only when the readback advertises it.
+
+Everything already proven stays: `UNBOUND_TASK`/`STALE_GENERATION` delivery
+fail-closed, cross-conversation ACK refusal, ACK-before-delivery in turn order,
+nonce requirement, rolled generation, duplicate suppression, scope, hook budget,
+staleness horizon and restart survival. Only `tests/test_w1d_fail_closed.py` case
+(e) was adapted: it asserted an unconditional `--window` re-read, which
+requirement 5 deliberately replaces with capability detection; its new form proves
+both the no-flag skip and the preserved bounded wider read for a capable tool.
+
+**Evidence:** RED `PYTEST_EXIT=1` (5 failed on the exact `daa1b12` base, byte-identical
+test file) — `RED_W1E_CORRECTED.txt`; GREEN `PYTEST_EXIT=0` (5 passed) —
+`GREEN_W1E.txt`; full suite `PYTEST_EXIT=0` (149 passed = 144 existing + 5 new) —
+`GREEN_FULL_W1E.txt`.

@@ -33,6 +33,9 @@ ACK_GENERATION_UNKNOWN = "ACK_GENERATION_UNKNOWN"
 ACK_DELIVERY_UNPROVEN = "ACK_DELIVERY_UNPROVEN"
 ACK_TIME_UNPROVEN = "ACK_TIME_UNPROVEN"
 ACK_BEFORE_DELIVERY = "ACK_BEFORE_DELIVERY"
+# W1e: a readback with no turn timestamps can still be bound by turn order, but
+# must be labelled so it is never read as a wall-clock-verified ACK.
+ACKED_ORDER_ONLY = "ACKED_ORDER_ONLY"
 # Clock skew tolerated when binding ACK turn time to delivery time. Named config,
 # not a literal buried in the sweep: operators set it via ack_skew_seconds.
 ACK_SKEW_SECONDS = 30.0
@@ -1051,11 +1054,17 @@ class WakeEmitter:
 
     def record_assistant_ack(self, event_id, message_ref=None, matched_utc=None,
                              lane=None, lane_source=None, conversation_id=None,
-                             generation=None):
-        """Called once the correlated assistant readback is observed."""
+                             generation=None, outcome="DELIVERED_ACKED",
+                             ack_binding="time_verified"):
+        """Called once the correlated assistant readback is observed.
+
+        ``outcome``/``ack_binding`` let a timestamp-less readback settle as
+        ACKED_ORDER_ONLY without ever being confused with a time-verified ACK.
+        """
         if not any(row.get("kind") == "event" and row.get("event_id") == event_id for row in self._rows()):
             return False
-        row = {"kind": "outcome", "event_id": event_id, "utc": _utc_now(), "outcome": "DELIVERED_ACKED"}
+        row = {"kind": "outcome", "event_id": event_id, "utc": _utc_now(),
+               "outcome": outcome, "ack_binding": ack_binding}
         if message_ref:
             row["ack_message_ref"] = message_ref
         if matched_utc:
@@ -1097,6 +1106,18 @@ class WakeEmitter:
             if isinstance(entry, dict) and entry.get("conv") == conv:
                 return entry.get("generation")
         return None
+
+    def _readback_supports_window(self):
+        """True only when the configured readback advertises --window.
+
+        Never pass an unknown argument: the live pane_read.py has no --window
+        flag, so the wider re-read is skipped rather than sent as a bad argv.
+        """
+        try:
+            text = Path(self.pane_read_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return "--window" in text
 
     def _ack_delivery(self, event_row, rows, global_lane):
         """Where an event was DELIVERED, frozen on its send-time attempt row.
@@ -1205,7 +1226,8 @@ class WakeEmitter:
             try:
                 turns = self._read_pane_turns(lane, remaining)
                 if (any(_ack_candidate(_turn_text(t), event_id) for t in turns)
-                        and _delivery_turn_index(turns, event_id) is None):
+                        and _delivery_turn_index(turns, event_id) is None
+                        and self._readback_supports_window()):
                     # Hole 3: one bounded wider window inside the same sweep
                     # deadline. Never accept a reply found on its own.
                     remaining = deadline - time.monotonic()
@@ -1233,6 +1255,21 @@ class WakeEmitter:
             matched = _ack_turn_index(turns, event_id)
             if matched is not None:
                 ack_utc = _turn_utc(turns[matched])
+                # Capability belongs to the READBACK, not to one turn: a pane
+                # that never supplies wall-clock time cannot time-bind an ACK.
+                readback_timed = any(_turn_utc(turn) is not None for turn in turns)
+                if not readback_timed:
+                    # Degrade, do not stall and do not claim time was verified:
+                    # delivery anchor + turn order + nonce is the strongest
+                    # binding this readback can supply.
+                    digest = hashlib.sha256(texts[matched].encode("utf-8")).hexdigest()[:12]
+                    self.record_assistant_ack(
+                        event_id, message_ref="%d:%s" % (matched, digest),
+                        matched_utc=None, lane=lane,
+                        lane_source=delivery["source"],
+                        conversation_id=delivery["conv"], generation=recorded_gen,
+                        outcome=ACKED_ORDER_ONLY, ack_binding="order_only")
+                    continue
                 ack_stamp = _parse_utc(ack_utc)
                 delivery_stamp = _parse_utc(delivery["utc"])
                 if ack_stamp is None or delivery_stamp is None:
@@ -1252,6 +1289,14 @@ class WakeEmitter:
                         matched_utc=_utc_now(), lane=lane,
                         lane_source=delivery["source"],
                         conversation_id=delivery["conv"], generation=recorded_gen)
+            elif (any(_ack_candidate(text, event_id) for text in texts)
+                  and _delivery_turn_index(turns, event_id) is not None):
+                # Delivery anchor is present but the ACK is not after it in
+                # turn order: refuse explicitly (the only anchor available to
+                # a timestamp-less readback is order).
+                if latest.get(event_id) != ACK_BEFORE_DELIVERY:
+                    self._record(event_id, ACK_BEFORE_DELIVERY,
+                                 {"delivery_turn_present": True, "ack_after_delivery": False})
             elif pending and _delivery_present(texts, event_id):
                 self._record(event_id, "DELIVERED_UNCONFIRMED")
             else:

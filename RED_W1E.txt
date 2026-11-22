@@ -1,0 +1,131 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\wigmore\.hermes\hermes-agent\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\wigmore\oc-runs\w1-activate-w1
+plugins: anyio-4.14.2, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 5 items
+
+tests/test_w1e_capability_aware.py::test_a_timestamped_ack_after_delivery_is_time_verified FAILED [ 20%]
+tests/test_w1e_capability_aware.py::test_b_untimed_readback_with_ordered_ack_settles_order_only FAILED [ 40%]
+tests/test_w1e_capability_aware.py::test_c_untimed_readback_without_delivery_turn_refuses FAILED [ 60%]
+tests/test_w1e_capability_aware.py::test_d_untimed_ack_before_delivery_in_order_refuses FAILED [ 80%]
+tests/test_w1e_capability_aware.py::test_e_no_readback_call_uses_unsupported_window_flag FAILED [100%]
+
+================================== FAILURES ===================================
+___________ test_a_timestamped_ack_after_delivery_is_time_verified ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10042/test_a_timestamped_ack_after_d0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FA49FA4590>
+
+    def test_a_timestamped_ack_after_delivery_is_time_verified(tmp_path, monkeypatch):
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1e-a")
+        utc = _delivery_utc(journal, eid)
+        turns = [_timed("EVENT-ID: %s" % eid, utc),
+                 _timed("WAKE-ACK %s" % eid, _shift(utc, 3))]
+        _sweep(worker, monkeypatch, turns)
+    
+        row = _outcomes(journal, eid)[-1]
+        assert row["outcome"] == "DELIVERED_ACKED", \
+            "a timestamped ACK after delivery must keep the strict settlement: %s" % row
+>       assert row.get("ack_binding") == "time_verified", \
+            "the time-verified path must be distinguishable from order-only: %s" % row
+E       AssertionError: the time-verified path must be distinguishable from order-only: {'ack_conversation_id': 'https://chatgpt.com/c/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'ack_generation': 1, 'ack_lane': 'gpt7:assistant', 'ack_lane_source': 'bound', 'ack_message_ref': '1:9ea4611419e8', 'ack_utc': '2026-11-22T16:18:52Z', 'event_id': '923c787a-0df1-40d5-bdc2-30744dce8c21', 'kind': 'outcome', 'outcome': 'DELIVERED_ACKED', 'utc': '2026-11-22T16:18:52Z'}
+E       assert None == 'time_verified'
+E        +  where None = <built-in method get of dict object at 0x000001FA49FA5300>('ack_binding')
+E        +    where <built-in method get of dict object at 0x000001FA49FA5300> = {'ack_conversation_id': 'https://chatgpt.com/c/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'ack_generation': 1, 'ack_lane': 'gpt7:assistant', 'ack_lane_source': 'bound', ...}.get
+
+tests\test_w1e_capability_aware.py:93: AssertionError
+_________ test_b_untimed_readback_with_ordered_ack_settles_order_only _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10042/test_b_untimed_readback_with_o0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FA49F5DF50>
+
+    def test_b_untimed_readback_with_ordered_ack_settles_order_only(tmp_path, monkeypatch):
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1e-b")
+        turns = [_untimed("EVENT-ID: %s" % eid), _untimed("WAKE-ACK %s" % eid)]
+        _sweep(worker, monkeypatch, turns)
+    
+        row = _outcomes(journal, eid)[-1]
+>       assert row["outcome"] == "ACKED_ORDER_ONLY", \
+            "a timestamp-less readback must degrade to a labelled order-only settlement: %s" % row
+E       AssertionError: a timestamp-less readback must degrade to a labelled order-only settlement: {'ack_utc': None, 'delivery_utc': '2026-11-22T16:18:52Z', 'event_id': '994f6f46-4029-4c43-9094-b001457216c6', 'kind': 'outcome', 'outcome': 'ACK_TIME_UNPROVEN', 'utc': '2026-11-22T16:18:52Z'}
+E       assert 'ACK_TIME_UNPROVEN' == 'ACKED_ORDER_ONLY'
+E         
+E         - ACKED_ORDER_ONLY
+E         + ACK_TIME_UNPROVEN
+
+tests\test_w1e_capability_aware.py:106: AssertionError
+____________ test_c_untimed_readback_without_delivery_turn_refuses ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10042/test_c_untimed_readback_withou0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FA49FD1890>
+
+    def test_c_untimed_readback_without_delivery_turn_refuses(tmp_path, monkeypatch):
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1e-c")
+        reads = _sweep(worker, monkeypatch, [_untimed("WAKE-ACK %s" % eid)])
+    
+        row = _outcomes(journal, eid)[-1]
+        assert row["outcome"] == "ACK_DELIVERY_UNPROVEN", \
+            "without the delivery anchor there is no order to trust: %s" % row
+        assert not any(r["outcome"] in ("DELIVERED_ACKED", "ACKED_ORDER_ONLY")
+                       for r in _outcomes(journal, eid)), "must not settle"
+>       assert all(w is None for _, w in reads), \
+            "a readback without --window must not be re-read with it: %s" % reads
+E       AssertionError: a readback without --window must not be re-read with it: [('gpt7:assistant', None), ('gpt7:assistant', 400)]
+E       assert False
+E        +  where False = all(<generator object test_c_untimed_readback_without_delivery_turn_refuses.<locals>.<genexpr> at 0x000001FA49FC0120>)
+
+tests\test_w1e_capability_aware.py:125: AssertionError
+_____________ test_d_untimed_ack_before_delivery_in_order_refuses _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10042/test_d_untimed_ack_before_deli0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FA49FD0D50>
+
+    def test_d_untimed_ack_before_delivery_in_order_refuses(tmp_path, monkeypatch):
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1e-d")
+        turns = [_untimed("WAKE-ACK %s" % eid), _untimed("EVENT-ID: %s" % eid)]
+        _sweep(worker, monkeypatch, turns)
+    
+        row = _outcomes(journal, eid)[-1]
+>       assert row["outcome"] == "ACK_BEFORE_DELIVERY", \
+            "an ACK ahead of its delivery anchor in turn order must refuse: %s" % row
+E       AssertionError: an ACK ahead of its delivery anchor in turn order must refuse: {'event_id': '3890872c-d272-41d1-bd5f-e80240989743', 'kind': 'outcome', 'outcome': 'DELIVERED_UNACKED', 'utc': '2026-11-22T16:18:52Z'}
+E       assert 'DELIVERED_UNACKED' == 'ACK_BEFORE_DELIVERY'
+E         
+E         - ACK_BEFORE_DELIVERY
+E         + DELIVERED_UNACKED
+
+tests\test_w1e_capability_aware.py:138: AssertionError
+____________ test_e_no_readback_call_uses_unsupported_window_flag _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10042/test_e_no_readback_call_uses_u0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FA49FE00D0>
+
+    def test_e_no_readback_call_uses_unsupported_window_flag(tmp_path, monkeypatch):
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1e-e")
+        calls = []
+    
+        def stub(lane, timeout, **kwargs):
+            calls.append(kwargs)
+            # Delivery turn absent: the only condition that could trigger a wider read.
+            return [_untimed("WAKE-ACK %s" % eid)]
+    
+        monkeypatch.setattr(worker, "_read_pane_turns", stub)
+        worker.on_session_end(**_payload("noop", turn_id=None, completed=False))
+    
+        assert calls, "the sweep must still read the pane once"
+>       assert all("window" not in kw for kw in calls), \
+            "never pass --window to a readback that does not support it: %s" % calls
+E       AssertionError: never pass --window to a readback that does not support it: [{}, {'window': 400}]
+E       assert False
+E        +  where False = all(<generator object test_e_no_readback_call_uses_unsupported_window_flag.<locals>.<genexpr> at 0x000001FA4A01C380>)
+
+tests\test_w1e_capability_aware.py:158: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_w1e_capability_aware.py::test_a_timestamped_ack_after_delivery_is_time_verified
+FAILED tests/test_w1e_capability_aware.py::test_b_untimed_readback_with_ordered_ack_settles_order_only
+FAILED tests/test_w1e_capability_aware.py::test_c_untimed_readback_without_delivery_turn_refuses
+FAILED tests/test_w1e_capability_aware.py::test_d_untimed_ack_before_delivery_in_order_refuses
+FAILED tests/test_w1e_capability_aware.py::test_e_no_readback_call_uses_unsupported_window_flag
+============================== 5 failed in 0.36s ==============================

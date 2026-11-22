@@ -8,8 +8,8 @@ config, gateway, cron or conversation is touched.
 (b) ACK turn timestamp predating the delivery utc is refused.
 (c) ACK turn timestamp at/after delivery (inside the named skew tolerance) settles.
 (d) ACK turn with no timestamp is UNPROVEN and does not settle.
-(e) Readback window omitting the delivery turn does not settle; one bounded wider
-    re-read is attempted, then the outcome is UNPROVEN.
+(e) Truncated window: refuse; a bounded wider re-read is used only when the
+    readback actually advertises --window, else no unsupported flag is passed.
 (f) The clock-skew tolerance is a named config value, not a hidden constant.
 """
 from __future__ import annotations
@@ -168,14 +168,26 @@ def test_d_ack_turn_without_timestamp_does_not_settle(tmp_path, monkeypatch):
         "an unproven time binding must never settle"
 
 
-# --- (e) truncated window: one bounded re-read, then UNPROVEN -------------
+# --- (e) truncated window: refuse; wider read only when supported ----------
 
-def test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven(
+def test_e_window_omitting_delivery_turn_rereads_only_when_supported(
         tmp_path, monkeypatch):
+    """W1e adaptation of W1d case (e).
+
+    W1d assumed a --window re-read was always available. The real pane_read has
+    no such flag, so the sweep must detect capability and skip it. Proven
+    behaviour is preserved for a readback that DOES advertise --window: the
+    same one bounded wider read can still settle the retry.
+    """
     emitter = _load()
     worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-e")
     utc = _delivery_utc(journal, eid)
     turns = [_ack_turn(eid, _shift(utc, 5))]  # delivery turn absent from window
+
+    # Readback without the flag: no unknown argument, immediate refusal.
+    no_window = tmp_path / "pane_read_no_window.py"
+    no_window.write_text("# synthesised readback: bounded tail only\n", encoding="utf-8")
+    worker.pane_read_path = str(no_window)
     reads = _sweep(worker, monkeypatch, lambda lane, window: list(turns))
 
     row = _outcomes(journal, eid)[-1]
@@ -183,13 +195,18 @@ def test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven(
         "a truncated window must be UNPROVEN, got %s" % row["outcome"]
     assert _no_acked(_outcomes(journal, eid), eid), \
         "a nonce alone in a truncated window must never settle"
-    assert reads == [(LANE_B, None), (LANE_B, emitter.ACK_REREAD_WINDOW)], \
-        "exactly one bounded wider re-read is allowed: %s" % reads
+    assert reads == [(LANE_B, None)], \
+        "no --window call may be made to a tool without the flag: %s" % reads
 
-    # The wider read's content is consumed, and the UNPROVEN outcome is retryable.
-    _sweep(worker, monkeypatch,
-           lambda lane, window: ([_delivery_turn(eid, utc)] + list(turns))
-           if window is not None else list(turns))
+    # Readback that advertises the flag: the bounded wider read is preserved.
+    with_window = tmp_path / "pane_read_with_window.py"
+    with_window.write_text("parser.add_argument('--window', type=int)\n", encoding="utf-8")
+    worker.pane_read_path = str(with_window)
+    reads2 = _sweep(worker, monkeypatch,
+                    lambda lane, window: ([_delivery_turn(eid, utc)] + list(turns))
+                    if window is not None else list(turns))
+    assert reads2 == [(LANE_B, None), (LANE_B, emitter.ACK_REREAD_WINDOW)], \
+        "a capable readback still gets exactly one bounded wider re-read: %s" % reads2
     assert _outcomes(journal, eid)[-1]["outcome"] == "DELIVERED_ACKED", \
         "a wider read containing the delivery turn must settle the retry"
 
