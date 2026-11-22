@@ -25,6 +25,14 @@ ACK_BUDGET_SECONDS = 60.0
 ACK_HORIZON_SECONDS = 1800.0
 # Consecutive observer failures tolerated per event before it is given up on.
 ACK_MAX_ERRORS = 3
+# Truthful ACK-side refusal: the bound conversation rotated after the send, so
+# its pane is no longer the conversation that received this event.
+ACK_GENERATION_ROLLED = "ACK_GENERATION_ROLLED"
+# Where an event was delivered, frozen on its write-ahead attempt row at send
+# time and carried onto the ACK outcome so a fallback event is labelled.
+ACK_SOURCE_BOUND = "bound"
+ACK_SOURCE_GLOBAL_FALLBACK = "global_fallback"
+ACK_SOURCE_LEGACY = "legacy"
 # Bounded hook: the host abandons an on_session_end callback at 30 s, so the
 # whole hook must finish inside this budget (default 20 s, well under 30).
 HOOK_BUDGET_SECONDS = 20.0
@@ -293,6 +301,52 @@ def _delivery_candidate(text, event_id):
 
 def _delivery_present(turns, event_id):
     return any(_delivery_candidate(text, event_id) for text in turns)
+
+
+def _turn_text(turn):
+    """Turn text from a stub string or a pane record, never a non-string."""
+    if isinstance(turn, str):
+        return turn
+    if isinstance(turn, dict) and isinstance(turn.get("text"), str):
+        return turn["text"]
+    return ""
+
+
+def _delivery_turn_index(turns, event_id):
+    """Index of the outbound wake for ``event_id`` in a pane, or None.
+
+    ``EVENT-ID: <id>`` is the bare nonce the sender submits, so it marks the
+    delivery turn itself; the reply line ``WAKE-ACK <id>`` does not carry it.
+    """
+    marker = "EVENT-ID: %s" % event_id
+    found = None
+    for index, turn in enumerate(turns):
+        if marker in _turn_text(turn):
+            found = index
+    return found
+
+
+def _ack_turn_index(turns, event_id):
+    """Index of an assistant turn that acknowledges ``event_id`` AFTER delivery.
+
+    The nonce must be in the reply half of the turn (``_ack_candidate``), and
+    the turn must follow the outbound delivery turn in the pane. If a combined
+    turn embeds both halves, the reply follows the delivery inside that turn.
+    A pane window that omits the delivery turn keeps the historical behaviour
+    and may settle from the reply alone.
+    """
+    delivery_index = _delivery_turn_index(turns, event_id)
+    for index, turn in enumerate(turns):
+        text = _turn_text(turn)
+        if not _ack_candidate(text, event_id):
+            continue
+        if delivery_index is not None:
+            if index < delivery_index:
+                continue
+            if index == delivery_index and REPLY_SPLIT not in text:
+                continue
+        return index
+    return None
 
 
 # -- durable task binding store -------------------------------------------
@@ -778,26 +832,32 @@ class WakeEmitter:
                 # a write-ahead intent for a send that never started.
                 self._record(event_id, DELIVERY_PENDING)
                 return DELIVERY_PENDING
-            self._record_attempt(event_id, ATTEMPTED, argv)
+            self._record_attempt(event_id, ATTEMPTED, argv, target)
             return self._send_and_record(event_id, argv)
 
     def _resolve_send_target(self, payload):
-        """Return {origin, lane, refusal, details}; fail closed when unbound."""
+        """Return {origin, lane, refusal, details, lane_source}; fail closed when unbound."""
         task_id = payload.get("task_id")
         session_id = payload.get("session_id")
         binding = self.bindings.lookup(task_id, session_id) if self.bindings else None
         if binding is not None:
-            return self._resolve_from_binding(binding)
+            target = self._resolve_from_binding(binding)
+            target["lane_source"] = ACK_SOURCE_BOUND
+            return target
         global_lane = self.lane or payload.get("lane")
         global_origin = self._resolve_origin(global_lane) if global_lane else None
         # The defect being closed: a resolvable global lane must NOT silently
         # carry an unbound task. With no store configured at all, legacy
-        # component behaviour is unchanged.
+        # component-instantiation behaviour is unchanged.
         if (self.bindings is not None and global_origin is not None
                 and not self.allow_unbound_global_fallback):
             return {"origin": None, "lane": None, "refusal": UNBOUND_TASK,
-                    "details": {"task_id": task_id, "session_id": session_id}}
-        return {"origin": global_origin, "lane": global_lane, "refusal": None}
+                    "details": {"task_id": task_id, "session_id": session_id},
+                    "lane_source": ACK_SOURCE_LEGACY}
+        source = ACK_SOURCE_GLOBAL_FALLBACK if self.allow_unbound_global_fallback \
+            else ACK_SOURCE_LEGACY
+        return {"origin": global_origin, "lane": global_lane, "refusal": None,
+                "lane_source": source}
 
     def _resolve_from_binding(self, binding):
         """Aim at the bound conversation; refuse any generation mismatch.
@@ -933,12 +993,26 @@ class WakeEmitter:
         self._append({"kind": "attempt_void", "event_id": event_id,
                       "utc": _utc_now(), "reason": reason})
 
-    def _record_attempt(self, event_id, stage, argv):
-        """Write-ahead intent: a send may have happened. No secrets in argv."""
-        self._append({"kind": "attempt", "event_id": event_id, "utc": _utc_now(),
-                      "outcome": stage, "argv": list(argv)})
+    def _record_attempt(self, event_id, stage, argv, target=None):
+        """Write-ahead intent: a send may have happened. No secrets in argv.
 
-    def record_assistant_ack(self, event_id, message_ref=None, matched_utc=None):
+        The binding-resolved lane/conversation/generation are frozen here so a
+        later ACK sweep reads the lane the event was DELIVERED to, even if the
+        binding or peer map changes before the reply arrives.
+        """
+        row = {"kind": "attempt", "event_id": event_id, "utc": _utc_now(),
+               "outcome": stage, "argv": list(argv)}
+        if target is not None:
+            origin = target.get("origin") or {}
+            row["delivery_lane"] = target.get("lane")
+            row["delivery_conv"] = origin.get("conv")
+            row["delivery_generation"] = origin.get("generation")
+            row["lane_source"] = target.get("lane_source") or ACK_SOURCE_LEGACY
+        self._append(row)
+
+    def record_assistant_ack(self, event_id, message_ref=None, matched_utc=None,
+                             lane=None, lane_source=None, conversation_id=None,
+                             generation=None):
         """Called once the correlated assistant readback is observed."""
         if not any(row.get("kind") == "event" and row.get("event_id") == event_id for row in self._rows()):
             return False
@@ -947,6 +1021,16 @@ class WakeEmitter:
             row["ack_message_ref"] = message_ref
         if matched_utc:
             row["ack_utc"] = matched_utc
+        # Label where this ACK was resolved from; a global-fallback event must
+        # be distinguishable from a binding-bound one after the fact.
+        if lane is not None:
+            row["ack_lane"] = lane
+        if lane_source is not None:
+            row["ack_lane_source"] = lane_source
+        if conversation_id is not None:
+            row["ack_conversation_id"] = conversation_id
+        if generation is not None:
+            row["ack_generation"] = generation
         self._append(row)
         return True
 
@@ -959,8 +1043,50 @@ class WakeEmitter:
             self._log("ack reconciliation error: %s: %s" % (type(exc).__name__, exc))
         return None
 
+    def _peer_generation(self, conv):
+        """Current generation for a conversation in the peer map, or None."""
+        if not conv:
+            return None
+        try:
+            peer = json.loads(self.peer_map_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        lanes = peer.get("lanes") if isinstance(peer, dict) else None
+        if not isinstance(lanes, dict):
+            return None
+        for entry in lanes.values():
+            if isinstance(entry, dict) and entry.get("conv") == conv:
+                return entry.get("generation")
+        return None
+
+    def _ack_delivery(self, event_row, rows, global_lane):
+        """Where an event was DELIVERED, frozen on its send-time attempt row.
+
+        The binding resolution is recorded in the write-ahead intent before the
+        sender runs, so reading it here cannot drift with a later rebind and
+        cannot confuse two conversations that hold the same nonce. An attempt
+        with no frozen resolution (written before this field existed) keeps the
+        historical configured-lane behaviour.
+        """
+        event_id = event_row.get("event_id")
+        last_void = -1
+        for index, row in enumerate(rows):
+            if row.get("kind") == "attempt_void" and row.get("event_id") == event_id:
+                last_void = index
+        for index in range(len(rows) - 1, -1, -1):
+            row = rows[index]
+            if (row.get("kind") == "attempt" and row.get("event_id") == event_id
+                    and index > last_void and row.get("delivery_lane")):
+                return {"lane": row.get("delivery_lane"),
+                        "conv": row.get("delivery_conv"),
+                        "generation": row.get("delivery_generation"),
+                        "source": row.get("lane_source") or ACK_SOURCE_LEGACY,
+                        "utc": row.get("utc")}
+        return {"lane": global_lane, "conv": None, "generation": None,
+                "source": ACK_SOURCE_LEGACY, "utc": event_row.get("utc")}
+
     def _reconcile_acks_inner(self, payload):
-        lane = self.lane or payload.get("lane")
+        global_lane = self.lane or payload.get("lane")
         rows = self._rows()
         latest = {}
         for row in rows:
@@ -988,13 +1114,10 @@ class WakeEmitter:
         if not candidates:
             return
 
-        if not lane:
-            for row in candidates:
-                if latest.get(row["event_id"]) == DELIVERY_PENDING:
-                    self._record(row["event_id"], "RECONCILE_UNAVAILABLE")
-                else:
-                    self._note_ack_failure(rows, row["event_id"], UnresolvedLane.__name__)
-            return
+        # One delivery resolution PER EVENT, from its own durable send-time
+        # record - never the one configured lane for every event.
+        deliveries = {row["event_id"]: self._ack_delivery(row, rows, global_lane)
+                      for row in candidates}
 
         deadline = self._deadline(ACK_BUDGET_SECONDS)
         for row in candidates:
@@ -1009,6 +1132,26 @@ class WakeEmitter:
                 # retrying this event, so a broken observer cannot grow the journal.
                 self._record(event_id, "ACK_CHECK_GAVE_UP")
                 continue
+            delivery = deliveries[event_id]
+            lane = delivery["lane"]
+            if not lane:
+                if pending:
+                    self._record(event_id, "RECONCILE_UNAVAILABLE")
+                else:
+                    self._note_ack_failure(rows, event_id, UnresolvedLane.__name__)
+                continue
+            # Generation safety on the ACK side: a conversation that rolled past
+            # the recorded generation no longer holds the delivered reply, so it
+            # cannot acknowledge this event. Record the truthful refusal.
+            recorded_gen = delivery["generation"]
+            if recorded_gen is not None:
+                observed = self._peer_generation(delivery["conv"])
+                if observed is not None and observed != recorded_gen:
+                    self._record(event_id, ACK_GENERATION_ROLLED,
+                                 {"conversation_id": delivery["conv"],
+                                  "recorded_generation": recorded_gen,
+                                  "observed_generation": observed})
+                    continue
             try:
                 turns = self._read_pane_turns(lane, remaining)
             except Exception as exc:
@@ -1020,15 +1163,16 @@ class WakeEmitter:
                     # Observer failure never becomes ACKED; leave it unacked for next time.
                     self._note_ack_failure(rows, event_id, type(exc).__name__)
                 continue
-            matched = None
-            for index, text in enumerate(turns):
-                if _ack_candidate(text, event_id):
-                    matched = index
+            texts = [_turn_text(turn) for turn in turns]
+            matched = _ack_turn_index(turns, event_id)
             if matched is not None:
-                digest = hashlib.sha256(turns[matched].encode("utf-8")).hexdigest()[:12]
-                self.record_assistant_ack(event_id, message_ref="%d:%s" % (matched, digest),
-                                          matched_utc=_utc_now())
-            elif pending and _delivery_present(turns, event_id):
+                digest = hashlib.sha256(texts[matched].encode("utf-8")).hexdigest()[:12]
+                self.record_assistant_ack(
+                    event_id, message_ref="%d:%s" % (matched, digest),
+                    matched_utc=_utc_now(), lane=lane,
+                    lane_source=delivery["source"],
+                    conversation_id=delivery["conv"], generation=recorded_gen)
+            elif pending and _delivery_present(texts, event_id):
                 self._record(event_id, "DELIVERED_UNCONFIRMED")
             else:
                 # A readable tail without the nonce proves nothing; a pending

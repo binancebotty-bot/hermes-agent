@@ -1,0 +1,160 @@
+FFFFFF                                                                   [100%]
+================================== FAILURES ===================================
+________________ test_a_ack_in_own_bound_conversation_settles _________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10000/test_a_ack_in_own_bound_conver0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021B34AEA990>
+
+    def test_a_ack_in_own_bound_conversation_settles(tmp_path, monkeypatch):
+        """(a) An ACK in the event's own bound conversation settles it."""
+        worker, journal, eid, sends = _delivered_worker(
+            tmp_path, monkeypatch, "task-ack-a", CONV_B)
+        reads, _ = _sweep(worker, monkeypatch, {LANE_B: ["WAKE-ACK " + eid]})
+    
+        row = _latest(journal, eid)
+>       assert row["outcome"] == "DELIVERED_ACKED", \
+            "ACK in the bound conversation must settle: got %s" % row["outcome"]
+E       AssertionError: ACK in the bound conversation must settle: got DELIVERED_UNACKED
+E       assert 'DELIVERED_UNACKED' == 'DELIVERED_ACKED'
+E         
+E         - DELIVERED_ACKED
+E         + DELIVERED_UNACKED
+E         ?           ++
+
+tests\test_ack_binding.py:73: AssertionError
+___________ test_b_same_nonce_in_other_conversation_does_not_settle ___________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10000/test_b_same_nonce_in_other_con0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021B34AE9150>
+
+    def test_b_same_nonce_in_other_conversation_does_not_settle(tmp_path, monkeypatch):
+        """(b) Delivery to A must not be settled by an ACK in B holding the nonce.
+    
+        Global lane is deliberately set to B: the old global-lane sweep reads B,
+        sees the exact nonce and wrongly settles an event delivered to A.
+        """
+        worker, journal, eid, _ = _delivered_worker(
+            tmp_path, monkeypatch, "task-ack-b", CONV_A, global_lane=LANE_B)
+        reads, _ = _sweep(worker, monkeypatch, {
+            LANE_B: ["WAKE-ACK " + eid],   # wrong conversation, exact nonce
+            LANE_A: [],                    # the conversation it was delivered to
+        })
+    
+        row = _latest(journal, eid)
+>       assert row["outcome"] != "DELIVERED_ACKED", \
+            "an ACK in conversation B must never settle an event delivered to A"
+E       AssertionError: an ACK in conversation B must never settle an event delivered to A
+E       assert 'DELIVERED_ACKED' != 'DELIVERED_ACKED'
+
+tests\test_ack_binding.py:96: AssertionError
+______________ test_c_mention_predating_delivery_does_not_settle ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10000/test_c_mention_predating_deliv0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021B34B6A590>
+
+    def test_c_mention_predating_delivery_does_not_settle(tmp_path, monkeypatch):
+        """(c) An earlier mention of the same text cannot settle a later event.
+    
+        The pane shows the ACK text BEFORE the outbound delivery turn, so it
+        predates this event's delivery. Global lane equals the bound lane here so
+        the old sweep reads the right lane and still wrongly settles.
+        """
+        worker, journal, eid, _ = _delivered_worker(
+            tmp_path, monkeypatch, "task-ack-c", CONV_B, global_lane=LANE_B)
+        reads, _ = _sweep(worker, monkeypatch, {
+            LANE_B: ["WAKE-ACK " + eid, "EVENT-ID: " + eid],
+        })
+    
+        row = _latest(journal, eid)
+>       assert row["outcome"] != "DELIVERED_ACKED", \
+            "an ACK turn before the delivery turn must not settle the event"
+E       AssertionError: an ACK turn before the delivery turn must not settle the event
+E       assert 'DELIVERED_ACKED' != 'DELIVERED_ACKED'
+
+tests\test_ack_binding.py:118: AssertionError
+__________________ test_d_ack_without_nonce_does_not_settle ___________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10000/test_d_ack_without_nonce_does_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021B34B46F50>
+
+    def test_d_ack_without_nonce_does_not_settle(tmp_path, monkeypatch):
+        """(d) A reply that does not carry the event nonce does not settle it."""
+        worker, journal, eid, _ = _delivered_worker(
+            tmp_path, monkeypatch, "task-ack-d", CONV_B)
+        reads, _ = _sweep(worker, monkeypatch, {
+            LANE_B: ["an assistant reply that never names the event"],
+        })
+    
+        row = _latest(journal, eid)
+        assert row["outcome"] != "DELIVERED_ACKED", \
+            "a nonce-less reply must not settle the event"
+>       assert reads == [LANE_B], \
+            "reconciliation must still read the bound lane: %s" % reads
+E       AssertionError: reconciliation must still read the bound lane: ['gpt6:assistant']
+E       assert ['gpt6:assistant'] == ['gpt7:assistant']
+E         
+E         At index 0 diff: 'gpt6:assistant' != 'gpt7:assistant'
+E         Use -v to get more diff
+
+tests\test_ack_binding.py:136: AssertionError
+__________________ test_e_rolled_generation_does_not_settle ___________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10000/test_e_rolled_generation_does_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021B34B5E650>
+
+    def test_e_rolled_generation_does_not_settle(tmp_path, monkeypatch):
+        """(e) A bound conversation that rolled past the recorded generation is
+        not a source of ACK evidence; the truthful outcome is recorded instead.
+        """
+        worker, journal, eid, _ = _delivered_worker(
+            tmp_path, monkeypatch, "task-ack-e", CONV_B, global_lane=LANE_B)
+        peer = json.loads(worker.peer_map_path.read_text(encoding="utf-8"))
+        peer["lanes"][LANE_B]["generation"] = GEN + 1   # pane rotated after send
+        worker.peer_map_path.write_text(json.dumps(peer), encoding="utf-8")
+    
+        reads, _ = _sweep(worker, monkeypatch, {LANE_B: ["WAKE-ACK " + eid]})
+    
+        row = _latest(journal, eid)
+>       assert row["outcome"] == "ACK_GENERATION_ROLLED", \
+            "a rolled generation must be a truthful refusal, got %s" % row["outcome"]
+E       AssertionError: a rolled generation must be a truthful refusal, got DELIVERED_ACKED
+E       assert 'DELIVERED_ACKED' == 'ACK_GENERATION_ROLLED'
+E         
+E         - ACK_GENERATION_ROLLED
+E         + DELIVERED_ACKED
+
+tests\test_ack_binding.py:155: AssertionError
+___ test_f_global_fallback_reconciles_from_configured_lane_and_is_labelled ____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10000/test_f_global_fallback_reconci0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021B34B848D0>
+
+    def test_f_global_fallback_reconciles_from_configured_lane_and_is_labelled(
+            tmp_path, monkeypatch):
+        """(f) An unbound event delivered under the explicit opt-in uses the
+        configured lane and is labelled as a global-fallback ACK.
+        """
+        worker, journal, eid, sends = _delivered_worker(
+            tmp_path, monkeypatch, "task-ack-f", None, allow_fallback=True)
+        assert sends[0][2] == LANE_A
+        reads, _ = _sweep(worker, monkeypatch, {LANE_A: ["WAKE-ACK " + eid]})
+    
+        row = _latest(journal, eid)
+        assert row["outcome"] == "DELIVERED_ACKED", \
+            "global-fallback events must still reconcile, got %s" % row["outcome"]
+>       assert row.get("ack_lane_source") == "global_fallback", \
+            "a global-fallback ACK must be labelled as such"
+E       AssertionError: a global-fallback ACK must be labelled as such
+E       assert None == 'global_fallback'
+E        +  where None = <built-in method get of dict object at 0x0000021B34B19A80>('ack_lane_source')
+E        +    where <built-in method get of dict object at 0x0000021B34B19A80> = {'ack_message_ref': '0:d5ef287c5216', 'ack_utc': '2026-11-22T15:54:38Z', 'event_id': 'faa65918-7000-429d-bc3c-5f45960267e8', 'kind': 'outcome', ...}.get
+
+tests\test_ack_binding.py:178: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_ack_binding.py::test_a_ack_in_own_bound_conversation_settles
+FAILED tests/test_ack_binding.py::test_b_same_nonce_in_other_conversation_does_not_settle
+FAILED tests/test_ack_binding.py::test_c_mention_predating_delivery_does_not_settle
+FAILED tests/test_ack_binding.py::test_d_ack_without_nonce_does_not_settle - ...
+FAILED tests/test_ack_binding.py::test_e_rolled_generation_does_not_settle - ...
+FAILED tests/test_ack_binding.py::test_f_global_fallback_reconciles_from_configured_lane_and_is_labelled
+6 failed in 0.51s
