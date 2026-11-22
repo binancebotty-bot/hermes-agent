@@ -404,9 +404,13 @@ class WakeEmitter:
             self._record(event_id or str(uuid.uuid4()), outcome)
         except BaseException as record_exc:
             # The journal itself is unwritable: fall back to the logger and
-            # still return the status string.
-            self._log("wake-emitter internal error %s: %s (status not recorded: %s: %s)"
-                      % (type(exc).__name__, exc, type(record_exc).__name__, record_exc))
+            # still return the status string. Format only type names: the
+            # exception objects' own __str__ may itself raise.
+            try:
+                self._log("wake-emitter internal error %s (status not recorded: %s)"
+                          % (type(exc).__name__, type(record_exc).__name__))
+            except BaseException:
+                pass
 
     def _on_session_end_enabled(self, payload):
         # Reconcile earlier deliveries first: this invocation was happening anyway,
@@ -475,8 +479,11 @@ class WakeEmitter:
         Write-ahead intents (kind="attempt": ATTEMPTED / RESENT) are not
         outcomes. Non-terminal outcomes do not satisfy the duplicate check:
         ACK_CHECK_ERROR (observer failure after delivery), REFUSED: (the sender
-        typed nothing), LOCK_TIMEOUT (this process failed closed), and the
-        legacy DELIVERED_BUSY no-send all leave the event deliverable.
+        typed nothing), LOCK_TIMEOUT (this process failed closed), the legacy
+        DELIVERED_BUSY no-send, and INTERNAL_ERROR: (a transient internal fault)
+        all leave the event deliverable. INTERNAL_ERROR is non-terminal so a
+        fault after the event row exists cannot suppress the turn; whether a
+        retry may blind-send is decided by the attempt rows in _resume_event.
         """
         for row in rows:
             if row.get("kind") != "outcome" or row.get("event_id") != event_id:
@@ -484,7 +491,7 @@ class WakeEmitter:
             outcome = row.get("outcome")
             if not isinstance(outcome, str):
                 continue
-            if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:")):
+            if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:", "INTERNAL_ERROR:")):
                 continue
             if outcome in ("DELIVERED_BUSY", "LOCK_TIMEOUT"):
                 continue
@@ -766,7 +773,8 @@ class WakeEmitter:
     @staticmethod
     def _is_failure_outcome(outcome):
         return isinstance(outcome, str) and (
-            outcome.startswith(("REFUSED:", "BLOCKED_", "DELIVERY_ERROR:", "LOCK_TIMEOUT"))
+            outcome.startswith(("REFUSED:", "BLOCKED_", "DELIVERY_ERROR:", "LOCK_TIMEOUT",
+                                "INTERNAL_ERROR:"))
             or outcome == "DELIVERED_BUSY")
 
     def _atomic_write_json(self, path, record):
