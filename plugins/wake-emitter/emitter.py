@@ -214,11 +214,9 @@ REPLY_SPLIT = "ChatGPT said:"
 # delivery proof. These markers identify a different sender's envelope, which
 # must never be read as our wake body.
 DELIVERY_ENVELOPE_MARKERS = ("HERMES-CTL 1", "MSG-ID:", "FROM: hermes:")
-# Write-ahead intent stages. kind="attempt" keeps them out of the terminal
-# outcome log (and its consumers) while still recording "a send may have
-# happened".
+# Write-ahead intent. kind="attempt" keeps it out of the terminal outcome log
+# (and its consumers) while still recording "a send may have happened".
 ATTEMPTED = "ATTEMPTED"
-RESENT = "RESENT"
 # Bounded read for resume reconciliation; unknown state must fail closed.
 RECONCILE_TIMEOUT_SECONDS = 60.0
 
@@ -441,9 +439,8 @@ class WakeEmitter:
                     if self._has_delivery_outcome(rows, event_id):
                         return "DUPLICATE"
                     # The event row exists but no terminal delivery outcome was
-                    # recorded. A write-ahead ATTEMPTED/RESENT row means a send
-                    # may have happened, so reconcile against the pane before
-                    # any resend; never blind-resend.
+                    # recorded. A write-ahead attempt row means a send may have
+                    # happened, so reconcile against the pane; never blind-resend.
                     resumed = True
             if event_id is None:
                 # No turn_id reaches this hook. A positional journal count is
@@ -476,14 +473,17 @@ class WakeEmitter:
     def _has_delivery_outcome(rows, event_id):
         """True when a terminal delivery outcome exists for this event.
 
-        Write-ahead intents (kind="attempt": ATTEMPTED / RESENT) are not
-        outcomes. Non-terminal outcomes do not satisfy the duplicate check:
+        Write-ahead intents (kind="attempt") are not outcomes. Non-terminal
+        outcomes do not satisfy the duplicate check:
         ACK_CHECK_ERROR (observer failure after delivery), REFUSED: (the sender
         typed nothing), LOCK_TIMEOUT (this process failed closed), the legacy
         DELIVERED_BUSY no-send, and INTERNAL_ERROR: (a transient internal fault)
         all leave the event deliverable. INTERNAL_ERROR is non-terminal so a
         fault after the event row exists cannot suppress the turn; whether a
-        retry may blind-send is decided by the attempt rows in _resume_event.
+        retry may send is decided by the attempt rows in _resume_event.
+        RECONCILE_UNPROVEN is unresolved (the readback could not confirm the
+        body), so it also stays open for a later reconciliation; the attempt
+        guard still makes a send impossible.
         """
         for row in rows:
             if row.get("kind") != "outcome" or row.get("event_id") != event_id:
@@ -491,7 +491,8 @@ class WakeEmitter:
             outcome = row.get("outcome")
             if not isinstance(outcome, str):
                 continue
-            if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:", "INTERNAL_ERROR:")):
+            if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:", "INTERNAL_ERROR:",
+                                   "RECONCILE_UNPROVEN")):
                 continue
             if outcome in ("DELIVERED_BUSY", "LOCK_TIMEOUT"):
                 continue
@@ -519,8 +520,9 @@ class WakeEmitter:
             rows = self._rows()
             if self._has_delivery_outcome(rows, event_id):
                 return "DUPLICATE"
-            if self._has_attempt(rows, event_id, ATTEMPTED) or self._has_attempt(rows, event_id, RESENT):
-                # Another process already started this event; never blind-send.
+            if self._has_attempt(rows, event_id):
+                # The single send gate: a write-ahead intent exists, so a send
+                # may already have happened. Never blind-send.
                 return "RECONCILE_UNAVAILABLE"
             self._record_attempt(event_id, ATTEMPTED, argv)
             return self._send_and_record(event_id, argv)
@@ -528,13 +530,15 @@ class WakeEmitter:
     def _resume_event(self, event_id, payload):
         """Reconcile an event that has no terminal delivery outcome.
 
-        Never blind-resend: the pane is the authority on whether the body
-        already landed. Unknown state fails closed (no second physical send).
+        A write-ahead attempt row means a send may already have happened, so
+        the pane is the only authority and the event is never resent: a body
+        positively present becomes DELIVERED_UNCONFIRMED, an unreadable pane
+        fails closed, and a readable tail without the body is RECONCILE_UNPROVEN
+        (unknown, not absent). No attempt row means no send can have happened,
+        so the event stays retry-eligible.
         """
         rows = self._rows()
-        attempted = self._has_attempt(rows, event_id, ATTEMPTED)
-        resent = self._has_attempt(rows, event_id, RESENT)
-        if not attempted and not resent:
+        if not self._has_attempt(rows, event_id):
             # No write-ahead intent exists, so no subprocess was ever invoked
             # for this event and no send can have happened. Safe to deliver.
             return self._deliver_and_record(event_id, payload)
@@ -553,61 +557,12 @@ class WakeEmitter:
         if _delivery_present(turns, event_id):
             self._record(event_id, "DELIVERED_UNCONFIRMED")
             return "DELIVERED_UNCONFIRMED"
-        if resent and self._resend_consumed(rows, event_id):
-            # The single resend already happened and may have delivered. A
-            # second crash must never produce a third physical send.
-            self._record(event_id, "RECONCILE_UNAVAILABLE")
-            return "RECONCILE_UNAVAILABLE"
-        return self._resend(event_id, payload)
-
-    @staticmethod
-    def _resend_consumed(rows, event_id):
-        """True when the last RESENT may have delivered, or is unknown.
-
-        A RESENT whose own recorded outcome is a nothing-sent REFUSED / LOCK_TIMEOUT
-        / DELIVERED_BUSY produced no physical effect, so it does not consume the
-        single-resend budget and a later invocation may still deliver. A RESENT
-        with no outcome of its own is unknown and fails closed.
-        """
-        last_resent = None
-        for index, row in enumerate(rows):
-            if (row.get("kind") == "attempt" and row.get("event_id") == event_id
-                    and row.get("outcome") == RESENT):
-                last_resent = index
-        if last_resent is None:
-            return False
-        outcome = None
-        for row in rows[last_resent + 1:]:
-            if row.get("kind") == "outcome" and row.get("event_id") == event_id:
-                outcome = row.get("outcome")
-                break
-        if outcome is None:
-            return True
-        return not (outcome.startswith("REFUSED:")
-                    or outcome in ("DELIVERED_BUSY", "LOCK_TIMEOUT"))
-
-    def _resend(self, event_id, payload):
-        """The one permitted resend: RESENT write-ahead under the lock, then the
-        real outcome. A resend another process already performed is not repeated."""
-        lane = self.lane or payload.get("lane")
-        origin = self._resolve_origin(lane)
-        if origin is None:
-            self._record(event_id, "BLOCKED_UNRESOLVED_ORIGIN")
-            return "BLOCKED_UNRESOLVED_ORIGIN"
-        argv = self._sender_argv(origin, event_id, lane)
-        with self._locked() as held:
-            if not held:
-                self._record_lock_timeout(event_id)
-                return "LOCK_TIMEOUT"
-            rows = self._rows()
-            if self._has_delivery_outcome(rows, event_id):
-                return "DUPLICATE"
-            if (self._has_attempt(rows, event_id, RESENT)
-                    and self._resend_consumed(rows, event_id)):
-                self._record(event_id, "RECONCILE_UNAVAILABLE")
-                return "RECONCILE_UNAVAILABLE"
-            self._record_attempt(event_id, RESENT, argv)
-            return self._send_and_record(event_id, argv)
+        # A readable tail that omits the body is not proof of absence. Stop:
+        # no send, no second attempt; the event stays open for a human or a
+        # later durable reconciliation.
+        self._record(event_id, "RECONCILE_UNPROVEN",
+                     {"lane": lane, "turns_read": len(turns)})
+        return "RECONCILE_UNPROVEN"
 
     def _send_and_record(self, event_id, argv):
         try:
@@ -625,9 +580,10 @@ class WakeEmitter:
         return resolve_origin(peer_map, lane)
 
     @staticmethod
-    def _has_attempt(rows, event_id, stage):
+    def _has_attempt(rows, event_id):
+        """True when any write-ahead send intent exists for this event."""
         return any(row.get("kind") == "attempt" and row.get("event_id") == event_id
-                   and row.get("outcome") == stage for row in rows)
+                   for row in rows)
 
     def _record_attempt(self, event_id, stage, argv):
         """Write-ahead intent: a send may have happened. No secrets in argv."""
@@ -844,8 +800,11 @@ class WakeEmitter:
         output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
         return _classify_sender_output(output, completed.returncode)
 
-    def _record(self, event_id, outcome):
-        self._append({"kind": "outcome", "event_id": event_id, "utc": _utc_now(), "outcome": outcome})
+    def _record(self, event_id, outcome, details=None):
+        row = {"kind": "outcome", "event_id": event_id, "utc": _utc_now(), "outcome": outcome}
+        if details:
+            row.update(details)
+        self._append(row)
 
 
 def build_from_ctx(ctx):
