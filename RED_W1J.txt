@@ -1,0 +1,223 @@
+FF.FFFFFFF                                                               [100%]
+================================== FAILURES ===================================
+___________ test_1a_real_two_line_envelope_is_not_an_ack_candidate ____________
+
+    def test_1a_real_two_line_envelope_is_not_an_ack_candidate():
+        """Unit match: the exact two-line payload the sender writes is rejected."""
+        emitter = _load()
+        eid = "11111111-1111-4111-8111-111111111111"
+        envelope = _two_line_envelope(eid)
+        assert emitter._ack_reply_half(envelope) == (
+            "Reply with this exact line and nothing else: WAKE-ACK " + eid)
+>       assert emitter._ack_candidate(envelope, eid) is False, \
+            "our own two-line envelope must not match as an ACK"
+E       AssertionError: our own two-line envelope must not match as an ACK
+E       assert True is False
+E        +  where True = <function _ack_candidate at 0x0000023529E4F240>('RC-w1j-11111111-1111-4111-8111-111111111111 | EVENT-ID: 11111111-1111-4111-8111-111111111111 WAKE from Hermes (hermes:mcp-integration)\nReply with this exact line and nothing else: WAKE-ACK 11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111')
+E        +    where <function _ack_candidate at 0x0000023529E4F240> = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>._ack_candidate
+
+tests\test_w1j_ack_hardening.py:55: AssertionError
+________________ test_1b_real_two_line_envelope_never_settles _________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_1b_real_two_line_envelope0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529E25890>
+
+    def test_1b_real_two_line_envelope_never_settles(tmp_path, monkeypatch):
+        """Sweep: the real envelope in the pane cannot settle its own event."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1j-self-ack")
+        _sweep(worker, monkeypatch, [_untimed(_two_line_envelope(eid))])
+        names = _outcome_names(journal, eid)
+>       assert not any(name in SETTLED for name in names), \
+            "our own outbound envelope must never settle: %s" % names
+E       AssertionError: our own outbound envelope must never settle: ['DELIVERED_UNACKED', 'ACKED_ORDER_ONLY']
+E       assert not True
+E        +  where True = any(<generator object test_1b_real_two_line_envelope_never_settles.<locals>.<genexpr> at 0x0000023529EF45F0>)
+
+tests\test_w1j_ack_hardening.py:64: AssertionError
+__________________ test_2a_late_ack_beats_sweep_count_expiry __________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_2a_late_ack_beats_sweep_c0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529E137D0>
+
+    def test_2a_late_ack_beats_sweep_count_expiry(tmp_path, monkeypatch):
+        """A genuine ACK on the sweep that would expire must settle, not expire."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1j-late-sweep")
+        worker.ack_unproven_max_sweeps = 1
+        worker.ack_unproven_max_seconds = 1.0e9
+        _sweep(worker, monkeypatch, [_peer_ack(eid)])  # unproven: no delivery anchor
+        assert "ACK_DELIVERY_UNPROVEN" in _outcome_names(journal, eid)
+    
+        _sweep(worker, monkeypatch, [_delivery(eid), _peer_ack(eid)])
+        names = _outcome_names(journal, eid)
+>       assert any(name in SETTLED for name in names), names
+E       AssertionError: ['DELIVERED_UNACKED', 'ACK_DELIVERY_UNPROVEN', 'ACK_UNPROVEN_EXPIRED']
+E       assert False
+E        +  where False = any(<generator object test_2a_late_ack_beats_sweep_count_expiry.<locals>.<genexpr> at 0x0000023529EF4E10>)
+
+tests\test_w1j_ack_hardening.py:91: AssertionError
+____________________ test_2b_late_ack_beats_elapsed_expiry ____________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_2b_late_ack_beats_elapsed0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529DF4FD0>
+
+    def test_2b_late_ack_beats_elapsed_expiry(tmp_path, monkeypatch):
+        """An aged unproven row must not expire when a genuine ACK is in the pane."""
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1j-late-elapsed")
+        worker.ack_unproven_max_sweeps = 99
+        worker.ack_unproven_max_seconds = 1.0
+        _sweep(worker, monkeypatch, [_peer_ack(eid)])
+        assert "ACK_DELIVERY_UNPROVEN" in _outcome_names(journal, eid)
+    
+        stale = "2020-01-01T00:00:00Z"
+        rows = _rows(journal)
+        for row in rows:
+            if row.get("event_id") == eid and row.get("utc") and row.get("kind") in (
+                    "event", "outcome", "attempt"):
+                row["utc"] = stale
+        journal.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    
+        _sweep(worker, monkeypatch, [_delivery(eid), _peer_ack(eid)])
+        names = _outcome_names(journal, eid)
+>       assert any(name in SETTLED for name in names), names
+E       AssertionError: ['DELIVERED_UNACKED', 'ACK_DELIVERY_UNPROVEN', 'ACK_UNPROVEN_EXPIRED']
+E       assert False
+E        +  where False = any(<generator object test_2b_late_ack_beats_elapsed_expiry.<locals>.<genexpr> at 0x0000023529EF5CB0>)
+
+tests\test_w1j_ack_hardening.py:114: AssertionError
+_____________ test_3a_record_rejects_invalid_pair_without_writing _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_3a_record_rejects_invalid0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529DC8A10>
+
+    def test_3a_record_rejects_invalid_pair_without_writing(tmp_path, monkeypatch):
+        """_record itself refuses a mismatched ACK pair and writes no row."""
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter)
+        before = len(_rows(journal))
+        result = worker._record("pair-event", "DELIVERED_ACKED",
+                                {"ack_binding": "order_only"})
+>       assert result == PAIRING_INVALID, \
+            "_record must return the named pairing error: %r" % (result,)
+E       AssertionError: _record must return the named pairing error: None
+E       assert None == 'ACK_PAIRING_INVALID'
+
+tests\test_w1j_ack_hardening.py:128: AssertionError
+______________ test_3b_record_assistant_ack_delegates_to_record _______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_3b_record_assistant_ack_d0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529D83410>
+
+    def test_3b_record_assistant_ack_delegates_to_record(tmp_path, monkeypatch):
+        """The public seam funnels through the guarded _record, not _append."""
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter)
+        calls = []
+        real_record = worker._record
+    
+        def spy(event_id, outcome, details=None):
+            calls.append((event_id, outcome, dict(details or {})))
+            return real_record(event_id, outcome, details)
+    
+        monkeypatch.setattr(worker, "_record", spy)
+>       assert worker.record_assistant_ack("delegated-event") is True
+E       AssertionError: assert False is True
+E        +  where False = record_assistant_ack('delegated-event')
+E        +    where record_assistant_ack = <wake-emitter.emitter.WakeEmitter object at 0x0000023529D81ED0>.record_assistant_ack
+
+tests\test_w1j_ack_hardening.py:145: AssertionError
+________ test_4_status_counts_reconcile_and_ack_label_is_newest_event _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_4_status_counts_reconcile0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529E3A6D0>
+
+    def test_4_status_counts_reconcile_and_ack_label_is_newest_event(tmp_path, monkeypatch):
+        """Counts sum to total_events; ack_label follows the newest event only."""
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter)
+        rows = [
+            {"kind": "event", "event_id": "A", "utc": "2026-01-01T00:00:00Z"},
+            {"kind": "outcome", "event_id": "A", "utc": "2026-01-01T00:01:00Z",
+             "outcome": "DELIVERED_ACKED", "ack_binding": "time_verified"},
+            {"kind": "event", "event_id": "B", "utc": "2026-01-01T00:02:00Z"},
+            {"kind": "event", "event_id": "B", "utc": "2026-01-01T00:03:00Z"},
+        ]
+        journal.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    
+        worker._write_status()
+        record = json.loads(worker.status_path.read_text(encoding="utf-8"))
+        counts = record.get("outcome_counts", {})
+>       assert sum(counts.values()) == record.get("total_events") == 3, \
+            "outcome_counts must reconcile with total_events: %s" % record
+E       AssertionError: outcome_counts must reconcile with total_events: {'ack_label': 'DELIVERED_ACKED', 'ack_unproven_max_seconds': 900.0, 'ack_unproven_max_sweeps': 5, 'last_event_utc': '2026-01-01T00:03:00Z', 'last_outcome': 'DELIVERED_ACKED', 'last_outcome_utc': '2026-01-01T00:01:00Z', 'outcome_counts': {'DELIVERED_ACKED': 1}, 'total_acked': 1, 'total_events': 3, 'total_failed': 0}
+E       assert 1 == 3
+E        +  where 1 = sum(dict_values([1]))
+E        +    where dict_values([1]) = <built-in method values of dict object at 0x0000023529DA5DC0>()
+E        +      where <built-in method values of dict object at 0x0000023529DA5DC0> = {'DELIVERED_ACKED': 1}.values
+E        +  and   3 = <built-in method get of dict object at 0x0000023529DA4A40>('total_events')
+E        +    where <built-in method get of dict object at 0x0000023529DA4A40> = {'ack_label': 'DELIVERED_ACKED', 'ack_unproven_max_seconds': 900.0, 'ack_unproven_max_sweeps': 5, 'last_event_utc': '2026-01-01T00:03:00Z', ...}.get
+
+tests\test_w1j_ack_hardening.py:169: AssertionError
+___________________ test_5a_forward_clock_step_does_not_age ___________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_5a_forward_clock_step_doe0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529D9DE50>
+
+    def test_5a_forward_clock_step_does_not_age(tmp_path, monkeypatch):
+        """A forwards wall-clock jump must not inflate age (CLOCK_STEP_GUARD)."""
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter)
+        row = {"utc": emitter._utc_now()}
+        real_now = datetime.now(timezone.utc)
+    
+        class Jumped(emitter.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_now + timedelta(hours=1)
+    
+        monkeypatch.setattr(emitter, "datetime", Jumped)
+        age = worker._age_seconds(row)
+>       assert age is not None and abs(age) <= worker.ack_skew_seconds + 1.0, \
+            "a forwards clock step must not age an event by an hour: %r" % age
+E       AssertionError: a forwards clock step must not age an event by an hour: 3600.461424
+E       assert (3600.461424 is not None and 3600.461424 <= (30.0 + 1.0))
+E        +  where 3600.461424 = abs(3600.461424)
+E        +  and   30.0 = <wake-emitter.emitter.WakeEmitter object at 0x0000023529D81D10>.ack_skew_seconds
+
+tests\test_w1j_ack_hardening.py:191: AssertionError
+_______________ test_5b_backward_clock_step_does_not_resurrect ________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10266/test_5b_backward_clock_step_do0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000023529D9FE50>
+
+    def test_5b_backward_clock_step_does_not_resurrect(tmp_path, monkeypatch):
+        """A backwards wall-clock jump must not make age negative (CLOCK_STEP_GUARD)."""
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter)
+        row = {"utc": emitter._utc_now()}
+        real_now = datetime.now(timezone.utc)
+    
+        class Back(emitter.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_now - timedelta(hours=1)
+    
+        monkeypatch.setattr(emitter, "datetime", Back)
+        age = worker._age_seconds(row)
+>       assert age is not None and age >= 0.0 and abs(age) <= worker.ack_skew_seconds + 1.0, \
+            "a backwards clock step must not resurrect an event: %r" % age
+E       AssertionError: a backwards clock step must not resurrect an event: -3599.52856
+E       assert (-3599.52856 is not None and -3599.52856 >= 0.0)
+
+tests\test_w1j_ack_hardening.py:209: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_w1j_ack_hardening.py::test_1a_real_two_line_envelope_is_not_an_ack_candidate
+FAILED tests/test_w1j_ack_hardening.py::test_1b_real_two_line_envelope_never_settles
+FAILED tests/test_w1j_ack_hardening.py::test_2a_late_ack_beats_sweep_count_expiry
+FAILED tests/test_w1j_ack_hardening.py::test_2b_late_ack_beats_elapsed_expiry
+FAILED tests/test_w1j_ack_hardening.py::test_3a_record_rejects_invalid_pair_without_writing
+FAILED tests/test_w1j_ack_hardening.py::test_3b_record_assistant_ack_delegates_to_record
+FAILED tests/test_w1j_ack_hardening.py::test_4_status_counts_reconcile_and_ack_label_is_newest_event
+FAILED tests/test_w1j_ack_hardening.py::test_5a_forward_clock_step_does_not_age
+FAILED tests/test_w1j_ack_hardening.py::test_5b_backward_clock_step_does_not_resurrect
+9 failed, 1 passed in 0.65s
+PYTEST_EXIT=1

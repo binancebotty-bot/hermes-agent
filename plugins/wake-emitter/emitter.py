@@ -52,6 +52,17 @@ ACK_UNPROVEN_OUTCOMES = frozenset((ACK_DELIVERY_UNPROVEN, ACK_TIME_UNPROVEN,
 ACK_PAIRING_INVALID = "ACK_PAIRING_INVALID"
 VALID_ACK_PAIRS = frozenset((("DELIVERED_ACKED", "time_verified"),
                              (ACKED_ORDER_ONLY, "order_only")))
+ACK_LABELS = frozenset(("DELIVERED_ACKED", ACKED_ORDER_ONLY))
+# W1j self-ACK: our own outbound payload is never a reply. The sender's line 2
+# is an instruction to the peer, not an ACK from it.
+SELF_ACK_PHRASE = "Reply with this exact line"
+SENDER_LINE_MARKERS = ("WAKE from Hermes", "hermes:mcp-integration")
+# W1j clock: a wall step past ack_skew_seconds is neutralised, never allowed to
+# expire or resurrect an event. Named so the behaviour is reportable in status.
+CLOCK_STEP_GUARD = "CLOCK_STEP_GUARD"
+# W1j status: events with no outcome get their own bucket so the per-outcome
+# counts always sum to total_events.
+NO_OUTCOME = "NO_OUTCOME"
 # Exactly one wider pane window is allowed when a reply's delivery turn is
 # truncated out of the readback; it shares the existing ACK sweep deadline.
 ACK_REREAD_WINDOW = 400
@@ -341,33 +352,58 @@ def _ack_reply_half(text):
     return text
 
 
-def _ack_candidate(text, event_id):
-    """True when ``text`` is a reply carrying the nonce AND the wake-ack keyword."""
+def _is_our_outbound(text, candidate, sent_text=None):
+    """True when a pane turn is our own outbound payload, never a peer reply.
+
+    The strict envelope form is restored over the WHOLE block: extraction must
+    not strip the marker that identifies our own message. The instruction line
+    and the sender line are equally ours even without an envelope marker.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    if any(marker in text for marker in ENVELOPE_MARKERS):
+        return True
+    if candidate:
+        if SELF_ACK_PHRASE in candidate:
+            return True
+        if any(marker in candidate for marker in SENDER_LINE_MARKERS):
+            return True
+    if sent_text and sent_text in text:
+        return True
+    return False
+
+
+def _ack_candidate(text, event_id, sent_text=None):
+    """True when ``text`` is a peer reply carrying the nonce and WAKE-ACK."""
+    if not isinstance(text, str) or not text:
+        return False
     candidate = _ack_reply_half(text)
     if candidate is None:
         return False
-    if any(marker in candidate for marker in ENVELOPE_MARKERS):
+    if _is_our_outbound(text, candidate, sent_text):
         return False
     return event_id in candidate and _has_wake_ack(candidate)
 
 
-def _ack_nonce_without_keyword(text, event_id):
-    """Nonce present in the reply half but the required keyword is missing."""
+def _ack_nonce_without_keyword(text, event_id, sent_text=None):
+    """Nonce present in a genuine peer reply half but the keyword is missing."""
+    if not isinstance(text, str) or not text:
+        return False
     candidate = _ack_reply_half(text)
     if candidate is None:
         return False
-    if any(marker in candidate for marker in ENVELOPE_MARKERS):
+    if _is_our_outbound(text, candidate, sent_text):
         return False
     return event_id in candidate and not _has_wake_ack(candidate)
 
 
-def _ack_without_separator(text):
-    """True for a combined block resolvable by keyword line, with no separator."""
+def _ack_without_separator(text, sent_text=None):
+    """True for a combined genuine reply resolvable by keyword line, no separator."""
     if not isinstance(text, str) or REPLY_SPLIT in text or not _has_wake_ack(text):
         return False
     half = _ack_reply_half(text)
     return (half != text and _has_wake_ack(half)
-            and not any(marker in half for marker in ENVELOPE_MARKERS))
+            and not _is_our_outbound(text, half, sent_text))
 
 
 def _delivery_candidate(text, event_id):
@@ -415,8 +451,8 @@ def _delivery_turn_index(turns, event_id):
     return found
 
 
-def _ack_turn_index(turns, event_id):
-    """Index of an assistant turn that acknowledges ``event_id`` AFTER delivery.
+def _ack_turn_index(turns, event_id, sent_text=None):
+    """Index of a peer turn that acknowledges ``event_id`` AFTER delivery.
 
     The nonce must be in the reply half of the turn (``_ack_candidate``), and
     the turn must follow the outbound delivery turn in the pane. If a combined
@@ -428,13 +464,13 @@ def _ack_turn_index(turns, event_id):
         return None
     for index, turn in enumerate(turns):
         text = _turn_text(turn)
-        if not _ack_candidate(text, event_id):
+        if not _ack_candidate(text, event_id, sent_text):
             continue
         if delivery_index is not None:
             if index < delivery_index:
                 continue
             if (index == delivery_index and REPLY_SPLIT not in text
-                    and not _ack_without_separator(text)):
+                    and not _ack_without_separator(text, sent_text)):
                 continue
         return index
     return None
@@ -558,6 +594,13 @@ class WakeEmitter:
         )
         self.ack_horizon_seconds = float(ack_horizon_seconds)
         self.ack_skew_seconds = float(ack_skew_seconds)
+        # W1j CLOCK_STEP_GUARD: wall time is trusted only while it tracks the
+        # monotonic clock. One anchor pair per emitter instance; a step is
+        # absorbed into _clock_offset instead of aging events.
+        self._wall_anchor = datetime.now(timezone.utc)
+        self._mono_anchor = time.monotonic()
+        self._clock_offset = 0.0
+        self._clock_guard_active = None
         self.ack_unproven_max_sweeps = int(ack_unproven_max_sweeps)
         self.ack_unproven_max_seconds = float(ack_unproven_max_seconds)
         self.lane = lane
@@ -1111,33 +1154,31 @@ class WakeEmitter:
                              lane=None, lane_source=None, conversation_id=None,
                              generation=None, outcome="DELIVERED_ACKED",
                              ack_binding="time_verified"):
-        """Called once the correlated assistant readback is observed.
+        """Called once the correlated peer readback is observed.
 
-        ``outcome``/``ack_binding`` let a timestamp-less readback settle as
-        ACKED_ORDER_ONLY without ever being confused with a time-verified ACK.
+        The outcome/binding pair is enforced by _record at the journal boundary;
+        this seam only supplies the proof fields and delegates to it.
         """
-        if (outcome, ack_binding) not in VALID_ACK_PAIRS:
+        if outcome in ACK_LABELS and (outcome, ack_binding) not in VALID_ACK_PAIRS:
             return ACK_PAIRING_INVALID
         if not any(row.get("kind") == "event" and row.get("event_id") == event_id for row in self._rows()):
             return False
-        row = {"kind": "outcome", "event_id": event_id, "utc": _utc_now(),
-               "outcome": outcome, "ack_binding": ack_binding}
+        details = {"ack_binding": ack_binding}
         if message_ref:
-            row["ack_message_ref"] = message_ref
+            details["ack_message_ref"] = message_ref
         if matched_utc:
-            row["ack_utc"] = matched_utc
+            details["ack_utc"] = matched_utc
         # Label where this ACK was resolved from; a global-fallback event must
         # be distinguishable from a binding-bound one after the fact.
         if lane is not None:
-            row["ack_lane"] = lane
+            details["ack_lane"] = lane
         if lane_source is not None:
-            row["ack_lane_source"] = lane_source
+            details["ack_lane_source"] = lane_source
         if conversation_id is not None:
-            row["ack_conversation_id"] = conversation_id
+            details["ack_conversation_id"] = conversation_id
         if generation is not None:
-            row["ack_generation"] = generation
-        self._append(row)
-        return True
+            details["ack_generation"] = generation
+        return self._record(event_id, outcome, details)
 
     # -- ACK reconciliation -----------------------------------------------
     def _reconcile_acks(self, payload):
@@ -1202,6 +1243,46 @@ class WakeEmitter:
         return {"lane": global_lane, "conv": None, "generation": None,
                 "source": ACK_SOURCE_LEGACY, "utc": event_row.get("utc")}
 
+    def _sent_text(self, rows, event_id):
+        """Exact payload recorded as sent for this event (write-ahead argv)."""
+        for row in reversed(rows):
+            if row.get("kind") == "attempt" and row.get("event_id") == event_id:
+                argv = row.get("argv") or []
+                if len(argv) > 3 and isinstance(argv[3], str):
+                    return argv[3]
+        return None
+
+    def _unproven_expiry(self, rows, event_id, delivery):
+        """Return (due, details) for a bounded unproven ACK.
+
+        Elapsed time uses both the delivery time and the first unproven row:
+        an event cannot be older than the older of the two. A wall-clock step
+        makes age unknown (CLOCK_STEP_GUARD), so only the sweep count may then
+        expire it. The caller applies this AFTER reading the pane, so a late
+        genuine ACK always wins.
+        """
+        unproven_rows = [r for r in rows
+                         if r.get("kind") == "outcome"
+                         and r.get("event_id") == event_id
+                         and r.get("outcome") in ACK_UNPROVEN_OUTCOMES]
+        sweeps = len(unproven_rows)
+        ages = []
+        stamps = (delivery.get("utc"),
+                  unproven_rows[0].get("utc") if unproven_rows else None)
+        for stamp in stamps:
+            parsed = _parse_utc(stamp)
+            if parsed is None:
+                continue
+            age = self._age_seconds({"utc": parsed.isoformat()})
+            if age is not None:
+                ages.append(age)
+        elapsed = max(ages) if ages else None
+        due = (sweeps >= self.ack_unproven_max_sweeps
+               or (elapsed is not None and elapsed >= self.ack_unproven_max_seconds))
+        return due, {"sweeps": sweeps, "elapsed_seconds": elapsed,
+                     "basis": "delivery_and_first_unproven",
+                     "clock_guard": getattr(self, "_clock_guard_active", None)}
+
     def _reconcile_acks_inner(self, payload):
         global_lane = self.lane or payload.get("lane")
         rows = self._rows()
@@ -1247,19 +1328,9 @@ class WakeEmitter:
                 break
             event_id = row["event_id"]
             pending = latest.get(event_id) == DELIVERY_PENDING
-            if latest.get(event_id) in ACK_UNPROVEN_OUTCOMES:
-                unproven_rows = [r for r in rows
-                                 if r.get("kind") == "outcome"
-                                 and r.get("event_id") == event_id
-                                 and r.get("outcome") in ACK_UNPROVEN_OUTCOMES]
-                sweeps = len(unproven_rows)
-                elapsed = self._age_seconds(unproven_rows[0]) if unproven_rows else None
-                if (sweeps >= self.ack_unproven_max_sweeps
-                        or (elapsed is not None
-                            and elapsed >= self.ack_unproven_max_seconds)):
-                    self._record(event_id, ACK_UNPROVEN_EXPIRED,
-                                 {"sweeps": sweeps, "elapsed_seconds": elapsed})
-                    continue
+            sent_text = self._sent_text(rows, event_id)
+            # W1j: expiry is decided only AFTER the pane read below. A genuine
+            # ACK arriving on the fifth sweep (or after 900 s) must settle.
             if self._consecutive_ack_errors(rows, event_id) >= ACK_MAX_ERRORS:
                 # Retry budget exhausted: record the terminal give-up once and stop
                 # retrying this event, so a broken observer cannot grow the journal.
@@ -1295,7 +1366,7 @@ class WakeEmitter:
                     continue
             try:
                 turns = self._read_pane_turns(lane, remaining)
-                if (any(_ack_candidate(_turn_text(t), event_id) for t in turns)
+                if (any(_ack_candidate(_turn_text(t), event_id, sent_text) for t in turns)
                         and _delivery_turn_index(turns, event_id) is None
                         and self._readback_supports_window()):
                     # Hole 3: one bounded wider window inside the same sweep
@@ -1314,16 +1385,26 @@ class WakeEmitter:
                     self._note_ack_failure(rows, event_id, type(exc).__name__)
                 continue
             texts = [_turn_text(turn) for turn in turns]
-            if (any(_ack_candidate(text, event_id) for text in texts)
+            matched = _ack_turn_index(turns, event_id, sent_text)
+            if (matched is None
+                    and latest.get(event_id) in ACK_UNPROVEN_OUTCOMES):
+                # A settlement was attempted on this read. Only now may a
+                # bounded unproven event expire; a late genuine ACK (matched)
+                # has already won and is never expired. Pending events with no
+                # unproven outcome keep their original, non-expiring path.
+                due, expiry_details = self._unproven_expiry(rows, event_id, delivery)
+                if due:
+                    self._record(event_id, ACK_UNPROVEN_EXPIRED, expiry_details)
+                    continue
+            if (any(_ack_candidate(text, event_id, sent_text) for text in texts)
                     and _delivery_turn_index(turns, event_id) is None):
                 # The delivery turn is still absent after the one wider read:
                 # the reply is unproven, not a nonce-only settlement.
                 self._record(event_id, ACK_DELIVERY_UNPROVEN,
                              {"lane": lane, "conversation_id": delivery["conv"]})
                 continue
-            matched = _ack_turn_index(turns, event_id)
             if matched is None and any(
-                    _ack_nonce_without_keyword(t, event_id) for t in texts):
+                    _ack_nonce_without_keyword(t, event_id, sent_text) for t in texts):
                 self._record(event_id, ACK_KEYWORD_MISSING,
                              {"lane": lane, "conversation_id": delivery["conv"]})
                 continue
@@ -1362,7 +1443,7 @@ class WakeEmitter:
                         matched_utc=_utc_now(), lane=lane,
                         lane_source=delivery["source"],
                         conversation_id=delivery["conv"], generation=recorded_gen)
-            elif (any(_ack_candidate(text, event_id) for text in texts)
+            elif (any(_ack_candidate(text, event_id, sent_text) for text in texts)
                   and _delivery_turn_index(turns, event_id) is not None):
                 # Delivery anchor is present but the ACK is not after it in
                 # turn order: refuse explicitly (the only anchor available to
@@ -1417,15 +1498,15 @@ class WakeEmitter:
                          if self._is_failure_outcome(latest.get(event_id, {}).get("outcome")))
             last_event = events[-1] if events else None
             last_outcome = outcomes[-1] if outcomes else None
+            # W1j: count event ROWS, not unique ids, so the buckets reconcile
+            # with total_events even with a duplicated row or no outcome.
             outcome_counts = {}
-            for event_id in event_ids:
-                label = latest.get(event_id, {}).get("outcome")
-                if label:
-                    outcome_counts[label] = outcome_counts.get(label, 0) + 1
-            ack_label = None
-            for row in outcomes:
-                if row.get("outcome") in ("DELIVERED_ACKED", ACKED_ORDER_ONLY):
-                    ack_label = row.get("outcome")
+            for event in events:
+                label = (latest.get(event.get("event_id")) or {}).get("outcome") or NO_OUTCOME
+                outcome_counts[label] = outcome_counts.get(label, 0) + 1
+            # ack_label describes the NEWEST event only, never an older ACK.
+            newest_outcome = (latest.get(last_event.get("event_id")) or {}) if last_event else {}
+            ack_label = newest_outcome.get("outcome") if newest_outcome.get("outcome") in ACK_LABELS else None
             record = {
                 "last_event_utc": last_event.get("utc") if last_event else None,
                 "last_outcome": last_outcome.get("outcome") if last_outcome else None,
@@ -1479,11 +1560,30 @@ class WakeEmitter:
         return _pane_turns(completed.stdout or "")
 
     def _age_seconds(self, row):
+        """Age in seconds, guarded by CLOCK_STEP_GUARD against wall steps.
+
+        The virtual clock advances with monotonic time; a wall step beyond
+        ack_skew_seconds is absorbed into an offset so it can neither expire
+        nor resurrect an event. A small backward slip is clamped to zero.
+        """
         raw = row.get("utc")
         if not raw:
             return None
         stamp = _parse_utc(raw)
-        return None if stamp is None else (datetime.now(timezone.utc) - stamp).total_seconds()
+        if stamp is None:
+            return None
+        now = datetime.now(timezone.utc)
+        drift = ((now - self._wall_anchor).total_seconds()
+                 - (time.monotonic() - self._mono_anchor))
+        if abs(drift) > self.ack_skew_seconds:
+            self._clock_offset += drift
+            self._wall_anchor = now
+            self._mono_anchor = time.monotonic()
+            self._clock_guard_active = CLOCK_STEP_GUARD
+        else:
+            self._clock_guard_active = None
+        adjusted = now - timedelta(seconds=self._clock_offset)
+        return max(0.0, (adjusted - stamp).total_seconds())
 
     # -- delivery ----------------------------------------------------------
     def _sender_argv(self, origin, event_id, lane):
@@ -1519,10 +1619,16 @@ class WakeEmitter:
         return _classify_sender_output(output, completed.returncode)
 
     def _record(self, event_id, outcome, details=None):
+        """Append one outcome, enforcing the ACK pair at the journal boundary."""
+        if outcome in ACK_LABELS:
+            binding = (details or {}).get("ack_binding")
+            if (outcome, binding) not in VALID_ACK_PAIRS:
+                return ACK_PAIRING_INVALID
         row = {"kind": "outcome", "event_id": event_id, "utc": _utc_now(), "outcome": outcome}
         if details:
             row.update(details)
         self._append(row)
+        return True
 
 
 def build_from_ctx(ctx):

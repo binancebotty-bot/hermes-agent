@@ -186,10 +186,12 @@ def test_4b_cli_status_surfaces_emitter_ack(tmp_path):
 # --- (5) combined block without the separator -----------------------------
 
 def test_5_combined_block_without_separator_keeps_ack(tmp_path, monkeypatch):
-    """Envelope marker + keyword ACK line in one block still settles."""
+    """A genuine peer WAKE-ACK after the delivery turn still settles."""
     worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1h-combined")
-    combined = "EVENT-ID: %s\nWAKE-ACK %s" % (eid, eid)
-    _sweep(worker, monkeypatch, [_untimed(combined)])
+    # Delivery anchor and reply are separate turns: our own envelope marker in
+    # one turn must not be extracted into the peer's reply half.
+    _sweep(worker, monkeypatch, [_untimed("EVENT-ID: " + eid),
+                                 _untimed("WAKE-ACK " + eid)])
 
     names = _outcome_names(journal, eid)
     assert any(name in SETTLED for name in names), \

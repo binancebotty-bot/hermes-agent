@@ -1,0 +1,10 @@
+$ env -u PYTHONPATH HERMES_DISABLE_LAZY_INSTALLS=1 <venv>/python.exe scripts/w1j_two_line_proof.py
+line 1: 'RC-w1j-11111111-1111-4111-8111-111111111111 | EVENT-ID: 11111111-1111-4111-8111-111111111111 WAKE from Hermes (hermes:mcp-integration)'
+line 2: 'Reply with this exact line and nothing else: WAKE-ACK 11111111-1111-4111-8111-111111111111'
+_ack_reply_half(envelope): 'Reply with this exact line and nothing else: WAKE-ACK 11111111-1111-4111-8111-111111111111'
+_ack_candidate(envelope, id) = False
+_ack_candidate('WAKE-ACK id', id) = True
+sweep outcomes: ['DELIVERED_UNACKED']
+self-settled: False
+sender invocations: 1
+EXIT=0
