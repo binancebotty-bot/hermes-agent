@@ -1,0 +1,356 @@
+FFFFFFFFFFFFFF                                                           [100%]
+================================== FAILURES ===================================
+______ test_h1_defaults_point_to_reviewed_artefact_and_refuse_bare_apply ______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h1_defaults_point_to_revi0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024B202D8790>
+
+    def test_h1_defaults_point_to_reviewed_artefact_and_refuse_bare_apply(tmp_path, monkeypatch):
+        for key in ("WAKE_SOURCE", "WAKE_REPO"):
+            monkeypatch.delenv(key, raising=False)
+        tool = _load_tool("wake_activate_h1")
+        paths = tool.build_paths(home=str(tmp_path))
+        reviewed = Path(tmp_path) / "oc-runs" / "w1-activate-w1"
+>       assert paths.source == reviewed / "plugins" / "wake-emitter"
+E       AssertionError: assert WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h1_defaults_point_to_revi0/oc-runs/w1-wake-w1/plugins/wake-emitter') == ((WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h1_defaults_point_to_revi0/oc-runs/w1-activate-w1') / 'plugins') / 'wake-emitter')
+E        +  where WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h1_defaults_point_to_revi0/oc-runs/w1-wake-w1/plugins/wake-emitter') = namespace(home=WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h1_defaults_point_t...re/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h1_defaults_point_to_revi0/.hermes/state/event_outbox.jsonl')).source
+
+tests\test_hardening.py:49: AssertionError
+___________ test_h2_wrong_expected_config_sha_refuses_before_write ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h2_wrong_expected_config_0')
+
+    def test_h2_wrong_expected_config_sha_refuses_before_write(tmp_path):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        bad = "f" * 64
+        fx.env["WAKE_EXPECTED_CONFIG_SHA"] = bad
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode != 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h2_wrong_expected_config_0\home\.hermes\config.yaml.wake-backup-20261122T092332Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h2_wrong_expected_config_0\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h2_wrong_expected_config_0\home\.hermes\state\wake_activation.json
+E           pinned sha fba6539ff56f3c9cb602bb2bf9a73d16e6f7d39a
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "fba6539ff56f3c9cb602bb2bf9a73d16e6f7d39a", "files": 3, "verified": true}
+E         
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "fba6539ff56f3c9cb602bb2bf9a73d16e6f7d39a", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:73: AssertionError
+_________ test_h3_corrupt_backup_refuses_without_touching_live_config _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h3_corrupt_backup_refuses0')
+
+    def test_h3_corrupt_backup_refuses_without_touching_live_config(tmp_path):
+        fx = build_home(tmp_path)
+        assert run_tool(fx, ["--apply"]).returncode == 0
+        live_before = sha(fx.config)
+        rec = json.loads(fx.record.read_text(encoding="utf-8"))
+        backup = Path(rec["backup_path"])
+        backup.write_text("CORRUPTED BACKUP", encoding="utf-8")
+        corrupt_sha = sha(backup)
+    
+        proc = run_tool(fx, ["--rollback"])
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+>       assert sha(fx.config) == live_before, "live config was clobbered by a bad backup"
+E       AssertionError: live config was clobbered by a bad backup
+E       assert '5daecd5bedd3...960346b81e890' == 'ee08fa059e72...a0d05e37da23d'
+E         
+E         - ee08fa059e728105286eabd3b3ab3ce3f1c14a52b86b54a9a54a0d05e37da23d
+E         + 5daecd5bedd3c15535d158297c01b4cf3d116cb96496dd92dd7960346b81e890
+
+tests\test_hardening.py:94: AssertionError
+___ test_h4_pre_record_written_before_first_mutation_and_rollback_recovers ____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h4_pre_record_written_bef0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024B204F3590>
+
+    def test_h4_pre_record_written_before_first_mutation_and_rollback_recovers(
+            tmp_path, monkeypatch):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        monkeypatch.setenv("WAKE_EXPECTED_CONFIG_SHA", pre)
+        tool = _load_tool("wake_activate_h4")
+        paths = tool.build_paths(home=str(fx.home), source=str(fx.src),
+                                 repo=str(fx.repo), lane=LANE)
+    
+        real_write = tool.write_record
+        calls = {"n": 0}
+    
+        def dying_write(path, record):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise RuntimeError("simulated death before COMPLETE flip")
+            return real_write(path, record)
+    
+        tool.write_record = dying_write
+        try:
+>           with pytest.raises(RuntimeError, match="simulated death"):
+E           Failed: DID NOT RAISE RuntimeError
+
+tests\test_hardening.py:122: Failed
+---------------------------- Captured stdout call -----------------------------
+  lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+  pane reachable: MATCHED_BY_CONV
+  backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h4_pre_record_written_bef0\home\.hermes\config.yaml.wake-backup-20261122T092333Z
+  installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h4_pre_record_written_bef0\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+  config enabled; readback flag_state=ON (ruamel round-trip)
+  record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h4_pre_record_written_bef0\home\.hermes\state\wake_activation.json
+  pinned sha 15390f0029f353bc16540fdfadc28ed1c75c88bf
+RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "15390f0029f353bc16540fdfadc28ed1c75c88bf", "files": 3, "verified": true}
+_________ test_h5_unwritable_plugins_destination_refuses_before_write _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_h5_unwritable_plugins_des0')
+
+    def test_h5_unwritable_plugins_destination_refuses_before_write(tmp_path):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        plugins_dir = fx.hermes / "plugins"
+        os.chmod(plugins_dir, stat.S_IREAD)
+        try:
+            proc = run_tool(fx, ["--apply"])
+        finally:
+            os.chmod(plugins_dir, stat.S_IWRITE | stat.S_IREAD)
+>       assert proc.returncode != 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h5_unwritable_plugins_des0\home\.hermes\config.yaml.wake-backup-20261122T092333Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h5_unwritable_plugins_des0\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_h5_unwritable_plugins_des0\home\.hermes\state\wake_activation.json
+E           pinned sha 4bf5c0c489eb63b5468bd8aabd3f463daaf78bcf
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "4bf5c0c489eb63b5468bd8aabd3f463daaf78bcf", "files": 3, "verified": true}
+E         
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "4bf5c0c489eb63b5468bd8aabd3f463daaf78bcf", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:154: AssertionError
+_________ test_interrupted_apply_recovery_at_each_step[preconditions] _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_interrupted_apply_recover0')
+phase = 'preconditions'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
+        fx = build_home(tmp_path / phase)
+        pre = sha(fx.config)
+        killed = run_env(fx, ["--apply"], WAKE_STOP_AFTER=phase)
+>       assert killed.returncode == 3, killed.stdout + killed.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover0\preconditions\home\.hermes\config.yaml.wake-backup-20261122T092334Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover0\preconditions\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover0\preconditions\home\.hermes\state\wake_activation.json
+E           pinned sha 4bf5c0c489eb63b5468bd8aabd3f463daaf78bcf
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "4bf5c0c489eb63b5468bd8aabd3f463daaf78bcf", "files": 3, "verified": true}
+E         
+E       assert 0 == 3
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "4bf5c0c489eb63b5468bd8aabd3f463daaf78bcf", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:168: AssertionError
+____________ test_interrupted_apply_recovery_at_each_step[backup] _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_interrupted_apply_recover1')
+phase = 'backup'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
+        fx = build_home(tmp_path / phase)
+        pre = sha(fx.config)
+        killed = run_env(fx, ["--apply"], WAKE_STOP_AFTER=phase)
+>       assert killed.returncode == 3, killed.stdout + killed.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover1\backup\home\.hermes\config.yaml.wake-backup-20261122T092334Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover1\backup\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover1\backup\home\.hermes\state\wake_activation.json
+E           pinned sha 9778104a94f36ed8cc58273e836a77a26f70ac3e
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "9778104a94f36ed8cc58273e836a77a26f70ac3e", "files": 3, "verified": true}
+E         
+E       assert 0 == 3
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "9778104a94f36ed8cc58273e836a77a26f70ac3e", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:168: AssertionError
+____________ test_interrupted_apply_recovery_at_each_step[plugin] _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_interrupted_apply_recover2')
+phase = 'plugin'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
+        fx = build_home(tmp_path / phase)
+        pre = sha(fx.config)
+        killed = run_env(fx, ["--apply"], WAKE_STOP_AFTER=phase)
+>       assert killed.returncode == 3, killed.stdout + killed.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover2\plugin\home\.hermes\config.yaml.wake-backup-20261122T092335Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover2\plugin\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover2\plugin\home\.hermes\state\wake_activation.json
+E           pinned sha 9778104a94f36ed8cc58273e836a77a26f70ac3e
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "9778104a94f36ed8cc58273e836a77a26f70ac3e", "files": 3, "verified": true}
+E         
+E       assert 0 == 3
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "9778104a94f36ed8cc58273e836a77a26f70ac3e", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:168: AssertionError
+____________ test_interrupted_apply_recovery_at_each_step[config] _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_interrupted_apply_recover3')
+phase = 'config'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
+        fx = build_home(tmp_path / phase)
+        pre = sha(fx.config)
+        killed = run_env(fx, ["--apply"], WAKE_STOP_AFTER=phase)
+>       assert killed.returncode == 3, killed.stdout + killed.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover3\config\home\.hermes\config.yaml.wake-backup-20261122T092335Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover3\config\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover3\config\home\.hermes\state\wake_activation.json
+E           pinned sha 183a3075da4ebe805cd7067e7ca955c301403d2c
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "183a3075da4ebe805cd7067e7ca955c301403d2c", "files": 3, "verified": true}
+E         
+E       assert 0 == 3
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "183a3075da4ebe805cd7067e7ca955c301403d2c", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:168: AssertionError
+____________ test_interrupted_apply_recovery_at_each_step[record] _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_interrupted_apply_recover4')
+phase = 'record'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
+        fx = build_home(tmp_path / phase)
+        pre = sha(fx.config)
+        killed = run_env(fx, ["--apply"], WAKE_STOP_AFTER=phase)
+>       assert killed.returncode == 3, killed.stdout + killed.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover4\record\home\.hermes\config.yaml.wake-backup-20261122T092336Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover4\record\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_interrupted_apply_recover4\record\home\.hermes\state\wake_activation.json
+E           pinned sha 183a3075da4ebe805cd7067e7ca955c301403d2c
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "183a3075da4ebe805cd7067e7ca955c301403d2c", "files": 3, "verified": true}
+E         
+E       assert 0 == 3
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "183a3075da4ebe805cd7067e7ca955c301403d2c", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:168: AssertionError
+___________________ test_toctou_drift_fails_closed[config] ____________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_toctou_drift_fails_closed0')
+kind = 'config'
+
+    @pytest.mark.parametrize("kind", ["config", "source"])
+    def test_toctou_drift_fails_closed(tmp_path, kind):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        proc = run_env(fx, ["--apply"], WAKE_DRIFT=kind)
+>       assert proc.returncode != 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_toctou_drift_fails_closed0\home\.hermes\config.yaml.wake-backup-20261122T092336Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_toctou_drift_fails_closed0\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_toctou_drift_fails_closed0\home\.hermes\state\wake_activation.json
+E           pinned sha 267c917fb9df963342569648d547afa6ceabe546
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "267c917fb9df963342569648d547afa6ceabe546", "files": 3, "verified": true}
+E         
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "267c917fb9df963342569648d547afa6ceabe546", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:198: AssertionError
+___________________ test_toctou_drift_fails_closed[source] ____________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_toctou_drift_fails_closed1')
+kind = 'source'
+
+    @pytest.mark.parametrize("kind", ["config", "source"])
+    def test_toctou_drift_fails_closed(tmp_path, kind):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        proc = run_env(fx, ["--apply"], WAKE_DRIFT=kind)
+>       assert proc.returncode != 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_toctou_drift_fails_closed1\home\.hermes\config.yaml.wake-backup-20261122T092337Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_toctou_drift_fails_closed1\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_toctou_drift_fails_closed1\home\.hermes\state\wake_activation.json
+E           pinned sha 267c917fb9df963342569648d547afa6ceabe546
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "267c917fb9df963342569648d547afa6ceabe546", "files": 3, "verified": true}
+E         
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "267c917fb9df963342569648d547afa6ceabe546", "files": 3, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:198: AssertionError
+___________ test_post_install_verification_accepts_loadable_plugin ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_post_install_verification0')
+
+    def test_post_install_verification_accepts_loadable_plugin(tmp_path):
+        fx = build_home(tmp_path)
+        proc = run_tool(fx, ["--apply"])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+>       verification = result(proc.stdout)["verification"]
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'verification'
+
+tests\test_hardening.py:212: KeyError
+_________ test_post_install_verification_rejects_manifestless_plugin __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9738/test_post_install_verification1')
+
+    def test_post_install_verification_rejects_manifestless_plugin(tmp_path):
+        fx = build_home(tmp_path)
+        (fx.src / "plugin.yaml").unlink()
+        _git(fx.repo, "add", "-A")
+        _git(fx.repo, "commit", "-qm", "remove manifest for inert-install rehearsal")
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=fx.repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+        fx.env["WAKE_EXPECTED_SHA"] = head
+        pre = sha(fx.config)
+    
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode != 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_post_install_verification1\home\.hermes\config.yaml.wake-backup-20261122T092338Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_post_install_verification1\home\.hermes\plugins\wake-emitter (2 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9738\test_post_install_verification1\home\.hermes\state\wake_activation.json
+E           pinned sha 56c5cd31f1afa47205e460410437b85ae8cc49df
+E         RESULT {"action": "apply", "state": "applied", "flag_state": "ON", "source_sha": "56c5cd31f1afa47205e460410437b85ae8cc49df", "files": 2, "verified": true}
+E         
+E       assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...ag_state": "ON", "source_sha": "56c5cd31f1afa47205e460410437b85ae8cc49df", "files": 2, "verified": true}\n', stderr='').returncode
+
+tests\test_hardening.py:239: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_hardening.py::test_h1_defaults_point_to_reviewed_artefact_and_refuse_bare_apply
+FAILED tests/test_hardening.py::test_h2_wrong_expected_config_sha_refuses_before_write
+FAILED tests/test_hardening.py::test_h3_corrupt_backup_refuses_without_touching_live_config
+FAILED tests/test_hardening.py::test_h4_pre_record_written_before_first_mutation_and_rollback_recovers
+FAILED tests/test_hardening.py::test_h5_unwritable_plugins_destination_refuses_before_write
+FAILED tests/test_hardening.py::test_interrupted_apply_recovery_at_each_step[preconditions]
+FAILED tests/test_hardening.py::test_interrupted_apply_recovery_at_each_step[backup]
+FAILED tests/test_hardening.py::test_interrupted_apply_recovery_at_each_step[plugin]
+FAILED tests/test_hardening.py::test_interrupted_apply_recovery_at_each_step[config]
+FAILED tests/test_hardening.py::test_interrupted_apply_recovery_at_each_step[record]
+FAILED tests/test_hardening.py::test_toctou_drift_fails_closed[config] - Asse...
+FAILED tests/test_hardening.py::test_toctou_drift_fails_closed[source] - Asse...
+FAILED tests/test_hardening.py::test_post_install_verification_accepts_loadable_plugin
+FAILED tests/test_hardening.py::test_post_install_verification_rejects_manifestless_plugin
+14 failed in 7.92s

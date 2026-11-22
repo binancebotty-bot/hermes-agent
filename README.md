@@ -24,6 +24,31 @@ Fixed by adding `plugins/wake-emitter/plugin.yaml` with `provides_hooks: [on_ses
 Probe now returns `manifests: [('wake-emitter', 'wake-emitter', ['on_session_end'])]` and
 `gate_manifest(...) == load` when `wake-emitter` is in `plugins.enabled`, `placeholder` when not.
 
+## Installer hardening (review findings H1-H5)
+
+`scripts/wake_activate.py` now defaults `--source/--repo` to this reviewed artefact repo
+(never the manifest-less `w1-wake-w1` tree) and requires both `--expected-sha` and the
+new mandatory `--expected-config-sha` (or their `WAKE_*` env equivalents). Every refusal
+happens before the first write.
+
+| Finding | Fix | Proving test (`tests/test_hardening.py`) |
+|---|---|---|
+| H1 wrong default source | defaults point at `w1-activate-w1`; missing SHA refuses | `test_h1_defaults_point_to_reviewed_artefact_and_refuse_bare_apply` |
+| H2 no config-hash check | live config SHA verified before any write | `test_h2_wrong_expected_config_sha_refuses_before_write` |
+| H3 rollback clobbers first | backup hash verified **before** overwrite; both hashes reported | `test_h3_corrupt_backup_refuses_without_touching_live_config` |
+| H4 no mid-apply recovery | `PRE` record written before first mutation, flipped to `applied` at the end; rollback accepts `PRE` | `test_h4_pre_record_written_before_first_mutation_and_rollback_recovers` |
+| H5 destination not checked | plugins parent writability is a precondition | `test_h5_unwritable_plugins_destination_refuses_before_write` |
+
+Controller additions: recovery is proven at all five interruption points
+(`test_interrupted_apply_recovery_at_each_step`), config/source TOCTOU drift fails closed
+(`test_toctou_drift_fails_closed`), and a post-install gate uses the **real** Hermes
+`scan_directory`/`gate_manifest` plus the plugin's own `build_from_ctx` so a copied-but-
+unloadable artefact cannot report success (`test_post_install_verification_*`).
+
+The two rehearsal-only hooks are `WAKE_STOP_AFTER=<phase>` (simulate a crash after
+`preconditions|backup|plugin|config|record`) and `WAKE_DRIFT=config|source` (simulate an
+external writer between check and write). Both are inert unless explicitly set.
+
 ## Files
 
 - `scripts/wake_activate.py` — the tool (`--dry-run/--status/--apply/--rollback`).
@@ -53,8 +78,9 @@ $PY scripts/rehearse_activation.py
 
 ## Evidence pointers
 
-- RED: `19 failed, 3 passed`, exit 1 (baseline tool/plugin).
-- GREEN: `22 passed`, exit 0.
+- RED (original baseline): `19 failed, 3 passed`, exit 1 (upstream tool/plugin).
+- RED (H1-H5 + controller additions): `14 failed`, exit 1 — `RED_H1_H5.txt`.
+- GREEN (this deliverable): `42 passed`, exit 0 — `GREEN_H1_H5.txt`.
 - Regression: the upstream wake-emitter suite run against this plugin copy — `54 passed, 1 skipped`.
 - Real config round-trip: enabling on a **copy** of the real `config.yaml` produces a 23-line diff
   (one list entry + the plugin's settings block); no comments exist in the real file and none are lost.

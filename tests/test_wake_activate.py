@@ -101,7 +101,13 @@ def build_home(tmp_path, *, lanes=None, pane_ok=True, sender_exists=True, config
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)
+    # H1: defaults now point at the reviewed artefact repo, so every rehearsal
+    # must name its own fake source/repo explicitly.
+    env["WAKE_SOURCE"] = str(src)
+    env["WAKE_REPO"] = str(repo)
     env["WAKE_EXPECTED_SHA"] = head
+    # H2: the live config SHA is now a mandatory, verified input.
+    env["WAKE_EXPECTED_CONFIG_SHA"] = sha(hermes / "config.yaml")
     return SimpleNamespace(home=home, repo=repo, src=src, hermes=hermes, head=head,
                            env=env, config=hermes / "config.yaml",
                            dst=hermes / "plugins" / "wake-emitter",

@@ -23,9 +23,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -182,6 +184,61 @@ def effective_settings(config, source):
     }
 
 
+def _discovery():
+    """Import Hermes's real discovery/gate API, self-located under the venv."""
+    try:
+        root = Path(sys.prefix).parent
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from hermes_cli import plugins_discovery as discovery
+        return discovery
+    except Exception:
+        return None
+
+
+def verify_install(paths, config):
+    """Post-install gate: the artefact must actually LOAD, not merely exist."""
+    problems = []
+    gate_action = None
+    discovery = _discovery()
+    if discovery is None:
+        problems.append("Hermes discovery API unavailable")
+    else:
+        try:
+            manifests = [m for m in discovery.scan_directory(paths.dst.parent, "user")
+                         if discovery.manifest_key(m) == PLUGIN_ID]
+            if len(manifests) != 1:
+                problems.append(f"discovery found {len(manifests)} manifests for {PLUGIN_ID}")
+            else:
+                gate = discovery.gate_manifest(manifests[0], set(), {PLUGIN_ID})
+                gate_action = gate.action
+                if gate.action != "load":
+                    problems.append(f"discovery gate action={gate.action!r} error={gate.error!r}")
+        except Exception as exc:
+            problems.append(f"discovery check failed: {type(exc).__name__}: {exc}")
+
+    settings = effective_settings(config, paths.dst)
+    effective_ok = False
+    if not settings or settings.get("error"):
+        problems.append(f"installed plugin config path unusable: {settings}")
+    else:
+        effective_ok = (
+            settings["enabled"] is True
+            and settings["lane"] == paths.lane
+            and all(Path(settings[key]).is_absolute() for key in
+                    ("journal_path", "peer_lane_map_path", "sender_path", "pane_read_path"))
+        )
+        if not effective_ok:
+            problems.append(f"installed plugin settings not effective: {settings}")
+    return {
+        "ok": not problems, "problems": problems,
+        "manifest_gate": gate_action,
+        "lane": settings.get("lane") if settings else None,
+        "paths_absolute": effective_ok,
+        "enabled": bool(settings and settings.get("enabled")),
+    }
+
+
 # -- origin resolution (fail closed, mirrors emitter.resolve_origin) --------
 
 def resolve_origin(peer_map, lane):
@@ -206,6 +263,19 @@ def _nearest_existing(path):
     while not path.exists() and path != path.parent:
         path = path.parent
     return path
+
+
+def _dir_writable(path):
+    """Fail closed when the plugins destination is missing or not writable."""
+    path = Path(path)
+    if not path.is_dir():
+        return False
+    try:
+        if not (path.stat().st_mode & stat.S_IWRITE):
+            return False
+    except OSError:
+        return False
+    return os.access(str(path), os.W_OK)
 
 
 def preconditions(paths):
@@ -248,6 +318,9 @@ def preconditions(paths):
         anchor = _nearest_existing(parent)
         if not os.access(str(anchor), os.W_OK):
             errors.append(f"journal parent not creatable: {parent} (anchor {anchor} not writable)")
+
+    if not _dir_writable(paths.dst.parent):
+        errors.append(f"plugins destination not writable: {paths.dst.parent}")
 
     config = load_config(paths.config) if paths.config.is_file() else None
     if config is None:
@@ -359,12 +432,42 @@ def write_record(path, record):
 
 # -- commands ---------------------------------------------------------------
 
-def apply(paths, expected_sha=None):
+def _stop_after(phase):
+    """Rehearsal-only crash injection: simulate a death just after a phase."""
+    if os.environ.get("WAKE_STOP_AFTER") == phase:
+        print(f"SIMULATED DEATH after {phase}")
+        raise SystemExit(3)
+
+
+def _inject_drift(kind, paths):
+    """Rehearsal-only external writer: mutate a file between check and write."""
+    if os.environ.get("WAKE_DRIFT") != kind:
+        return
+    if kind == "source":
+        with open(paths.source / "emitter.py", "a", encoding="utf-8") as handle:
+            handle.write("\n# external source drift during apply\n")
+    elif kind == "config":
+        with open(paths.config, "a", encoding="utf-8") as handle:
+            handle.write("\n# external config drift during apply\n")
+
+
+def apply(paths, expected_sha=None, expected_config_sha=None):
     expected_sha = expected_sha or os.environ.get("WAKE_EXPECTED_SHA")
+    expected_config_sha = expected_config_sha or os.environ.get("WAKE_EXPECTED_CONFIG_SHA")
     errors = preconditions(paths)
     if errors:
         for error in errors:
             print(f"REFUSED: {error}")
+        return 2
+    _stop_after("preconditions")
+
+    config_before = sha256(paths.config)
+    if not expected_config_sha:
+        print("REFUSED: no expected config SHA supplied (pass --expected-config-sha "
+              "or set WAKE_EXPECTED_CONFIG_SHA)")
+        return 2
+    if expected_config_sha != config_before:
+        print(f"REFUSED: expected config SHA {expected_config_sha} != live config SHA {config_before}")
         return 2
 
     toplevel = git_toplevel(paths.repo)
@@ -397,14 +500,35 @@ def apply(paths, expected_sha=None):
         print(f"REFUSED: source plugin has no files: {paths.source}")
         return 2
 
-    config_before = sha256(paths.config)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     backup = paths.config.with_name(f"{paths.config.name}.wake-backup-{stamp}")
+    # PRE-RECORD before the first mutation: any later death is recoverable.
+    record = {
+        "utc": utc_now(), "action": "apply", "state": "pre", "plugin_id": PLUGIN_ID,
+        "source_dir": str(paths.source), "repo": str(paths.repo),
+        "source_sha": head, "expected_sha": expected_sha, "dirty": False,
+        "expected_config_sha": expected_config_sha, "file_hashes": source_hashes,
+        "config_path": str(paths.config), "config_sha256_before": config_before,
+        "backup_path": str(backup), "plugin_dir": str(paths.dst),
+        "lane": paths.lane, "intended_state": "ON",
+    }
+    write_record(paths.record, record)
+    print(f"  pre-record: {paths.record} (state=pre; rollback recovers any later step)")
+
     shutil.copy2(paths.config, backup)
     if sha256(backup) != config_before:
         print("REFUSED: config backup does not match the pre-apply bytes")
+        rollback(paths)
         return 2
     print(f"  backup: {backup}")
+    _stop_after("backup")
+
+    # Re-hash the source immediately before the copy: refuse on TOCTOU drift.
+    _inject_drift("source", paths)
+    if tree_hashes(paths.source) != source_hashes:
+        print("REFUSED: source tree drifted between hash check and plugin copy; reverting")
+        rollback(paths)
+        return 2
 
     replaced = None
     if paths.dst.exists():
@@ -420,32 +544,49 @@ def apply(paths, expected_sha=None):
         print("REFUSED: installed file hashes do not match the source; copy reverted")
         return 2
     print(f"  installed {paths.dst} ({len(installed)} files, hashes match source)")
+    _stop_after("plugin")
+
+    # Re-hash the live config immediately before the write: refuse on TOCTOU drift.
+    _inject_drift("config", paths)
+    if sha256(paths.config) != config_before:
+        print("REFUSED: live config drifted between hash check and write; reverting")
+        rollback(paths)
+        return 2
 
     config = load_config(paths.config)
     enable_in_config(config, paths)
     save_config(paths.config, config)
     readback = read_flag(load_config(paths.config))
     if readback["flag_state"] != "ON":
-        shutil.copy2(backup, paths.config)
-        print(f"REFUSED: config readback flag_state={readback['flag_state']!r}; backup restored")
+        print(f"REFUSED: config readback flag_state={readback['flag_state']!r}; reverting")
+        rollback(paths)
         return 2
     print(f"  config enabled; readback flag_state=ON ({YAML_LIB} round-trip)")
+    _stop_after("config")
 
-    record = {
-        "utc": utc_now(), "action": "apply", "state": "applied", "plugin_id": PLUGIN_ID,
-        "source_dir": str(paths.source), "repo": str(paths.repo),
-        "source_sha": head, "expected_sha": expected_sha, "dirty": False,
-        "file_hashes": source_hashes, "installed_hashes": installed,
-        "config_path": str(paths.config), "config_sha256_before": config_before,
-        "backup_path": str(backup), "plugin_dir": str(paths.dst),
-        "lane": paths.lane, "flag_state": "ON",
-    }
-    write_record(paths.record, record)
+    # No inert-but-green install: discovery must see a loadable manifest and the
+    # plugin's own config path must report the intended state.
+    verification = verify_install(paths, load_config(paths.config))
+    if not verification["ok"]:
+        for problem in verification["problems"]:
+            print(f"REFUSED: post-install verification: {problem}")
+        rollback(paths)
+        return 2
+    print(f"  post-install verification: loadable (gate={verification['manifest_gate']}, "
+          f"lane={verification['lane']}, paths_absolute={verification['paths_absolute']})")
+
+    record["state"] = "applied"
+    record["flag_state"] = "ON"
+    record["installed_hashes"] = installed
+    record["post_install_verification"] = verification
+    write_record(paths.record, record)  # flip PRE -> COMPLETE
+    _stop_after("record")
     print(f"  record: {paths.record}")
     print(f"  pinned sha {head}")
     print("RESULT " + json.dumps({"action": "apply", "state": "applied",
                                  "flag_state": "ON", "source_sha": head,
-                                 "files": len(installed), "verified": True}))
+                                 "files": len(installed), "verified": True,
+                                 "verification": verification}))
     return 0
 
 
@@ -474,8 +615,23 @@ def rollback(paths):
                                      "plugin_dir_absent": not paths.dst.exists()}))
         return 1
 
+    # Verify the backup BEFORE touching the live config: a tampered backup must
+    # never clobber it. Report both hashes so the operator can see the mismatch.
+    backup_sha = sha256(backup)
+    if expected is None or backup_sha != expected:
+        print(f"REFUSED: backup hash {backup_sha} != recorded pre-apply hash {expected}; "
+              "live config left untouched")
+        print("RESULT " + json.dumps({"action": "rollback", "verified": False,
+                                     "config_hash_matches": False,
+                                     "backup_sha256": backup_sha, "expected_sha256": expected,
+                                     "live_config_unchanged": True,
+                                     "plugin_dir_absent": not paths.dst.exists()}))
+        return 1
+
+    if record.get("state") == "pre":
+        print("  rolling back an interrupted apply (record state=pre)")
     shutil.copy2(backup, paths.config)
-    config_ok = expected is not None and sha256(paths.config) == expected
+    config_ok = sha256(paths.config) == expected
     if not config_ok:
         print(f"REFUSED: restored config hash does not equal the pre-apply hash {expected}")
         print("RESULT " + json.dumps({"action": "rollback", "verified": False,
@@ -536,9 +692,9 @@ def build_paths(home=None, source=None, repo=None, lane=None):
     user_home = Path(home or os.environ.get("WAKE_HOME") or Path.home())
     hermes = Path(os.environ.get("WAKE_HERMES_HOME") or (user_home / ".hermes"))
     source = Path(source or os.environ.get("WAKE_SOURCE")
-                  or (user_home / "oc-runs" / "w1-wake-w1" / "plugins" / PLUGIN_ID))
+                  or (user_home / "oc-runs" / "w1-activate-w1" / "plugins" / PLUGIN_ID))
     repo = Path(repo or os.environ.get("WAKE_REPO")
-                or (user_home / "oc-runs" / "w1-wake-w1"))
+                or (user_home / "oc-runs" / "w1-activate-w1"))
     lane = lane or os.environ.get("WAKE_LANE") or DEFAULT_LANE
     return SimpleNamespace(
         home=user_home, hermes=hermes, source=source, repo=repo, lane=lane,
@@ -559,6 +715,8 @@ def main(argv=None):
     parser.add_argument("--repo", help="git repo root of the plugin source")
     parser.add_argument("--lane", help="target lane in state/peer_lane_map.json")
     parser.add_argument("--expected-sha", help="required source commit SHA to pin")
+    parser.add_argument("--expected-config-sha",
+                        help="required SHA-256 of the live config before any write")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--status", action="store_true")
@@ -573,7 +731,7 @@ def main(argv=None):
         print(json.dumps(status(paths), indent=1, sort_keys=True))
         return 0
     if args.apply:
-        return apply(paths, args.expected_sha)
+        return apply(paths, args.expected_sha, args.expected_config_sha)
 
     print("PLAN (dry run; no writes)")
     print(f"  home       {paths.home}")
@@ -582,13 +740,14 @@ def main(argv=None):
     print(f"  lane       {paths.lane}")
     print(f"  config     {paths.config}")
     print(f"  plugin dst {paths.dst}")
-    print("  1 preconditions: lane resolves with conv+generation; sender/pane_read exist;"
-          " pane_read reports MATCHED_BY_CONV")
-    print("  2 pin: git HEAD must equal --expected-sha and the tree must be clean")
-    print("  3 backup config, copy plugin, assert installed hashes == source hashes")
-    print("  4 write plugins.enabled + plugins.entries.wake-emitter.settings.enabled=true;"
-          " read back and require flag_state=ON")
-    print("  5 rollback: restore config from backup, verify hash, move plugin aside")
+    print("  1 preconditions: lane resolves; sender/pane_read exist; pane_read reports"
+          " MATCHED_BY_CONV; plugins destination writable")
+    print("  2 pin: git HEAD == --expected-sha, clean tree; live config == --expected-config-sha")
+    print("  3 write PRE-RECORD, then backup config and copy plugin (re-hash source before copy)")
+    print("  4 re-hash config before write; enable flag; read back flag_state=ON")
+    print("  5 post-install gate: discovery gate=load and installed plugin reports the"
+          " intended lane and absolute paths; then flip record PRE -> COMPLETE")
+    print("  6 rollback: verify backup hash BEFORE overwrite, restore config, remove plugin")
     print()
     print("RESULT " + json.dumps(status(paths), sort_keys=True))
     return 0
