@@ -94,6 +94,20 @@ def test_escape_via_symlink_is_refused(sandbox):
     assert result["status"] == "REFUSED" and result["reason"] == "ROOT_ESCAPE"
 
 
+def test_hard_link_to_outside_file_is_refused(sandbox):
+    """A hard link inside root shares the inode of an outside file; resolve() cannot see it."""
+    root, outside = sandbox
+    victim = outside / "outside.txt"
+    victim.write_text("OUTSIDE-CONTENT", encoding="utf-8")
+    link = root / "inside_link.txt"
+    try:
+        os.link(victim, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hard links unavailable on this host: {exc}")
+    result = _call(_handlers(root).file_read, path=str(link))
+    assert result["status"] == "REFUSED" and result["reason"] == "HARD_LINK_REFUSED"
+
+
 def test_absolute_path_outside_root_is_refused(sandbox):
     root, outside = sandbox
     victim = outside / "victim.txt"
@@ -161,6 +175,27 @@ def test_binary_file_refused_as_text(sandbox):
     assert result["status"] == "REFUSED" and result["reason"] == "BINARY_FILE"
 
 
+def test_partial_utf8_bytes_are_not_text():
+    """A truncated multibyte sequence must not decode to an empty string."""
+    assert _ft()._decode_text(b"\xe2\x82") is None
+
+
+def test_partial_utf8_read_is_refused_not_empty_ok(sandbox):
+    root, _ = sandbox
+    target = root / "partial.txt"
+    target.write_bytes(b"\xe2\x82")  # leading two bytes of a three-byte UTF-8 character
+    result = _call(_handlers(root).file_read, path=str(target))
+    assert result["status"] == "REFUSED" and result["reason"] == "BINARY_FILE"
+
+
+def test_truncation_boundary_never_silently_drops_read_bytes(sandbox):
+    root, _ = sandbox
+    target = root / "unicode.txt"
+    target.write_bytes("A€B".encode("utf-8"))
+    result = _call(_handlers(root).file_read, path=str(target), max_bytes=2)
+    assert result["status"] == "REFUSED" and result["reason"] == "BINARY_FILE"
+
+
 def test_read_missing_file_reports_error(sandbox):
     root, _ = sandbox
     result = _call(_handlers(root).file_read, path=str(root / "absent.txt"))
@@ -208,6 +243,48 @@ def test_write_is_atomic_when_commit_fails(sandbox, monkeypatch):
     assert result["status"] == "NOT_WRITTEN" and result["reason"] == "COMMIT_FAILED"
     assert target.read_text(encoding="utf-8") == "OLD"
     assert not list(root.glob("*.tmp*")), "atomic write left a temp file behind"
+
+
+def test_fdopen_failure_closes_descriptor_and_removes_temp(sandbox, monkeypatch):
+    root, _ = sandbox
+    target = root / "note.txt"
+    seen = []
+
+    def failing_fdopen(fd, *args, **kwargs):
+        seen.append(fd)
+        raise OSError("simulated fdopen failure")
+
+    monkeypatch.setattr(file_tools.os, "fdopen", failing_fdopen)
+    result = _call(_handlers(root).file_write, path=str(target), content="LEAK-PROBE")
+    assert result["status"] == "NOT_WRITTEN" and result["reason"] == "COMMIT_FAILED"
+    assert seen, "fdopen was never attempted"
+    assert not list(root.glob("w3-*.tmp")), "fdopen failure left a temp file behind"
+    with pytest.raises(OSError):
+        os.fstat(seen[0])
+
+
+def test_replace_failure_does_not_leave_temp_after_unlink_sharing_violation(sandbox, monkeypatch):
+    root, _ = sandbox
+    target = root / "note.txt"
+    target.write_text("OLD", encoding="utf-8")
+    real_unlink = os.unlink
+    calls = []
+
+    def flaky_unlink(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError("simulated Windows sharing violation on unlink")
+        return real_unlink(path)
+
+    def crash_replace(src, dst):
+        raise OSError("simulated Windows sharing violation on replace")
+
+    monkeypatch.setattr(file_tools.os, "replace", crash_replace)
+    monkeypatch.setattr(file_tools.os, "unlink", flaky_unlink)
+    result = _call(_handlers(root).file_write, path=str(target), content="LEAK-PROBE")
+    assert result["status"] == "NOT_WRITTEN" and result["reason"] == "COMMIT_FAILED"
+    assert not list(root.glob("w3-*.tmp")), "replace failure left a temp file behind"
+    assert target.read_text(encoding="utf-8") == "OLD"
 
 
 def test_write_create_parents_only_when_asked(sandbox):
@@ -281,19 +358,45 @@ def test_edit_empty_old_is_not_written(sandbox):
     assert target.read_text(encoding="utf-8") == "abc"
 
 
-# --- credential deny list (configurable, default OFF) ------------------------
+# --- credential deny list (default ON; deny_credentials=False is the full-reach opt-in) ---
 
-def test_deny_list_is_off_by_default(sandbox):
+def test_deny_list_is_on_by_default(sandbox):
+    root, _ = sandbox
+    target = root / "secrets" / "mcp_coordinator_token.txt"
+    target.parent.mkdir()
+    target.write_text("placeholder-not-a-real-token", encoding="utf-8")
+    result = _call(_handlers(root).file_read, path=str(target))
+    assert result["status"] == "REFUSED" and result["reason"] == "CREDENTIAL_DENIED"
+    params = inspect.signature(_ft().register_file_tools).parameters
+    assert params["deny_credentials"].default is True
+
+
+def test_explicit_opt_in_restores_full_approved_reach(sandbox):
     root, _ = sandbox
     target = root / "secrets" / "token.txt"
     target.parent.mkdir()
-    target.write_text("tok", encoding="utf-8")
-    assert _call(_handlers(root).file_read, path=str(target))["status"] == "OK"
-    params = inspect.signature(_ft().register_file_tools).parameters
-    assert params["deny_credentials"].default is False
+    target.write_text("placeholder", encoding="utf-8")
+    result = _call(_handlers(root, deny_credentials=False).file_read, path=str(target))
+    assert result["status"] == "OK" and result["content"] == "placeholder"
 
 
-def test_enabling_deny_list_narrows_below_approved_scope(sandbox):
+@pytest.mark.parametrize("relative", [
+    ".ssh/id_ed25519", ".aws/credentials", ".docker/config.json",
+    ".config/gh/hosts.yml", ".config/tailscale/tailscaled.log",
+    ".netrc", ".npmrc", ".hermes/secrets/coordinator_token.txt",
+    "Browser/Login Data", "Editor/state.vscdb", "keys/private_key.pem",
+    "backup/id_rsa", "vault/keychain.db",
+])
+def test_default_deny_covers_credential_materials(sandbox, relative):
+    root, _ = sandbox
+    target = root.joinpath(*relative.split("/"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("placeholder", encoding="utf-8")
+    result = _call(_handlers(root).file_read, path=str(target))
+    assert result["status"] == "REFUSED" and result["reason"] == "CREDENTIAL_DENIED"
+
+
+def test_explicit_opt_in_still_narrows_when_requested(sandbox):
     root, _ = sandbox
     target = root / ".ssh" / "id_ed25519"
     target.parent.mkdir()
