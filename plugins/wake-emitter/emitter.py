@@ -24,6 +24,13 @@ ACK_BUDGET_SECONDS = 60.0
 ACK_HORIZON_SECONDS = 1800.0
 # Consecutive observer failures tolerated per event before it is given up on.
 ACK_MAX_ERRORS = 3
+# Bounded hook: the host abandons an on_session_end callback at 30 s, so the
+# whole hook must finish inside this budget (default 20 s, well under 30).
+HOOK_BUDGET_SECONDS = 20.0
+# Margin reserved inside the budget for the journal record and the status write.
+HOOK_RESERVE_SECONDS = 0.5
+# Non-terminal: the send was still running when the hook budget expired.
+DELIVERY_PENDING = "DELIVERY_PENDING"
 # turn_id absent: no positional identity, no dedupe; the event uuid is the identity.
 AT_LEAST_ONCE_KEY = "none:at-least-once"
 STATUS_SUFFIX = ".status.json"
@@ -221,6 +228,8 @@ DELIVERY_ENVELOPE_MARKERS = ("HERMES-CTL 1", "MSG-ID:", "FROM: hermes:")
 ATTEMPTED = "ATTEMPTED"
 # Bounded read for resume reconciliation; unknown state must fail closed.
 RECONCILE_TIMEOUT_SECONDS = 60.0
+# Hard cap on one sender subprocess when no hook deadline is active.
+SENDER_TIMEOUT_SECONDS = 120.0
 
 
 def _ack_candidate(text, event_id):
@@ -265,7 +274,8 @@ class WakeEmitter:
 
     def __init__(self, *, journal_path, peer_map_path, sender_path, pane_read_path=None,
                  ack_horizon_seconds=ACK_HORIZON_SECONDS, lane=None, enabled=False, logger=None,
-                 lock_timeout_seconds=None, scope=None, python_executable=None):
+                 lock_timeout_seconds=None, scope=None, python_executable=None,
+                 hook_budget_seconds=HOOK_BUDGET_SECONDS):
         self.journal_path = Path(journal_path)
         self.peer_map_path = Path(peer_map_path)
         # One interpreter governs every child this emitter spawns. Cron workers
@@ -288,6 +298,8 @@ class WakeEmitter:
         self.lock_path = Path(str(self.journal_path) + ".lock")
         self.lock_timeout_seconds = float(
             LOCK_TIMEOUT_SECONDS if lock_timeout_seconds is None else lock_timeout_seconds)
+        # Whole-hook wall-clock budget; the host abandons the callback at 30 s.
+        self.hook_budget_seconds = float(hook_budget_seconds)
 
     # -- journal -----------------------------------------------------------
     def _rows(self):
@@ -379,7 +391,10 @@ class WakeEmitter:
 
         Absent scope keeps the historical emit-on-every-completed-turn contract.
         Present scope is an allowlist: every configured rule must pass, and a
-        scope with no effective rule allows nothing.
+        scope with no effective rule allows nothing. ``task_id_prefix_allow`` is
+        an additional gate: when present and non-empty, only those task_id
+        prefixes are in scope, so minted/uuid, interactive, gateway and induced
+        turns are skipped instead of waking the lane.
         """
         scope = self.scope
         if scope is None:
@@ -396,7 +411,12 @@ class WakeEmitter:
             excluded = scope.get("task_id_exclude_prefixes", [])
             if not isinstance(excluded, list) or any(not isinstance(p, str) for p in excluded):
                 return False
-            if not session_ids and not need_task:
+            # Additional allow gate: a malformed value rejects, an empty or
+            # absent one is a no-op so existing scopes keep today's behaviour.
+            allowed = scope.get("task_id_prefix_allow", [])
+            if not isinstance(allowed, list) or any(not isinstance(p, str) for p in allowed):
+                return False
+            if not session_ids and not need_task and not allowed:
                 return False
             if session_ids and payload.get("session_id") not in session_ids:
                 return False
@@ -404,6 +424,9 @@ class WakeEmitter:
             if need_task and not task_id:
                 return False
             if isinstance(task_id, str) and any(task_id.startswith(p) for p in excluded):
+                return False
+            if allowed and (not isinstance(task_id, str)
+                            or not any(task_id.startswith(p) for p in allowed)):
                 return False
             return True
         except BaseException:
@@ -414,6 +437,9 @@ class WakeEmitter:
         if not self.enabled:
             self._log("wake-emitter disabled; no event emitted")
             return "DISABLED"
+        # One wall-clock budget per invocation, shared by the ack sweep, the
+        # pane read and the send. The host abandons the callback at 30 s.
+        self._hook_deadline = time.monotonic() + self.hook_budget_seconds
         try:
             outcome = self._on_session_end_enabled(payload)
         except BaseException as exc:
@@ -422,6 +448,8 @@ class WakeEmitter:
             # raise into the turn_finalizer hook call.
             outcome = "INTERNAL_ERROR:%s" % type(exc).__name__
             self._record_internal_error(payload, exc)
+        finally:
+            self._hook_deadline = None
         # Liveness signal, written last so it can never mask or replace the
         # primary outcome. A BaseException here is swallowed too.
         try:
@@ -451,6 +479,15 @@ class WakeEmitter:
                           % (type(exc).__name__, type(record_exc).__name__))
             except BaseException:
                 pass
+
+    def _deadline(self, cap_seconds):
+        """The active hook deadline, never more than ``cap_seconds`` away.
+
+        Outside a hook invocation there is no budget, so the cap alone applies.
+        """
+        deadline = getattr(self, "_hook_deadline", None)
+        cap = time.monotonic() + cap_seconds
+        return cap if deadline is None else min(deadline, cap)
 
     def _on_session_end_enabled(self, payload):
         # Scope runs first: a rejected turn must produce no event, no outcome,
@@ -523,13 +560,13 @@ class WakeEmitter:
         outcomes do not satisfy the duplicate check:
         ACK_CHECK_ERROR (observer failure after delivery), REFUSED: (the sender
         typed nothing), LOCK_TIMEOUT (this process failed closed), the legacy
-        DELIVERED_BUSY no-send, and INTERNAL_ERROR: (a transient internal fault)
-        all leave the event deliverable. INTERNAL_ERROR is non-terminal so a
-        fault after the event row exists cannot suppress the turn; whether a
-        retry may send is decided by the attempt rows in _resume_event.
-        RECONCILE_UNPROVEN is unresolved (the readback could not confirm the
-        body), so it also stays open for a later reconciliation; the attempt
-        guard still makes a send impossible.
+        DELIVERED_BUSY no-send, INTERNAL_ERROR: (a transient internal fault),
+        RECONCILE_UNPROVEN (the readback could not confirm the body),
+        RECONCILE_UNAVAILABLE (the readback itself failed), DELIVERY_ERROR: (the
+        sender process faulted) and DELIVERY_PENDING (the send outlived the hook
+        budget) all leave the event deliverable. Each stays open for a later
+        reconciliation; the attempt guard in _resume_event still makes a send
+        impossible once a write-ahead intent exists.
         """
         for row in rows:
             if row.get("kind") != "outcome" or row.get("event_id") != event_id:
@@ -538,9 +575,10 @@ class WakeEmitter:
             if not isinstance(outcome, str):
                 continue
             if outcome.startswith(("ACK_CHECK_ERROR:", "REFUSED:", "INTERNAL_ERROR:",
-                                   "RECONCILE_UNPROVEN")):
+                                   "RECONCILE_UNPROVEN", "DELIVERY_ERROR:",
+                                   "DELIVERY_PENDING")):
                 continue
-            if outcome in ("DELIVERED_BUSY", "LOCK_TIMEOUT"):
+            if outcome in ("DELIVERED_BUSY", "LOCK_TIMEOUT", "RECONCILE_UNAVAILABLE"):
                 continue
             return True
         return False
@@ -570,6 +608,11 @@ class WakeEmitter:
                 # The single send gate: a write-ahead intent exists, so a send
                 # may already have happened. Never blind-send.
                 return "RECONCILE_UNAVAILABLE"
+            if self._deadline(HOOK_BUDGET_SECONDS) - time.monotonic() <= HOOK_RESERVE_SECONDS:
+                # No room left to send: leave the event open rather than write
+                # a write-ahead intent for a send that never started.
+                self._record(event_id, DELIVERY_PENDING)
+                return DELIVERY_PENDING
             self._record_attempt(event_id, ATTEMPTED, argv)
             return self._send_and_record(event_id, argv)
 
@@ -593,7 +636,8 @@ class WakeEmitter:
         turns = None
         if lane:
             try:
-                turns = self._read_pane_turns(lane, RECONCILE_TIMEOUT_SECONDS)
+                turns = self._read_pane_turns(
+                    lane, max(0.05, self._deadline(RECONCILE_TIMEOUT_SECONDS) - time.monotonic()))
             except Exception as exc:
                 self._log("reconcile read failed for %s: %s: %s"
                           % (event_id, type(exc).__name__, exc))
@@ -611,10 +655,25 @@ class WakeEmitter:
         return "RECONCILE_UNPROVEN"
 
     def _send_and_record(self, event_id, argv):
+        """One bounded send. The hook budget caps the wait, never the event.
+
+        The send seam stays one-argument (callers and tests wrap it); the
+        bound is handed over as a deadline. A sender that cannot finish in
+        budget is killed by ``subprocess.run`` and recorded DELIVERY_PENDING
+        (non-terminal): the write-ahead attempt row already forbids a second
+        physical send, and the next invocation reconciles the pane.
+        """
+        timeout = max(0.05, self._deadline(HOOK_BUDGET_SECONDS) - time.monotonic()
+                      - HOOK_RESERVE_SECONDS)
+        self._sender_deadline = time.monotonic() + timeout
         try:
             outcome = self._run_sender(argv)
+        except subprocess.TimeoutExpired:
+            outcome = DELIVERY_PENDING
         except Exception as exc:
             outcome = f"DELIVERY_ERROR:{type(exc).__name__}"
+        finally:
+            self._sender_deadline = None
         self._record(event_id, outcome)
         return outcome
 
@@ -690,7 +749,7 @@ class WakeEmitter:
                 self._note_ack_failure(rows, row["event_id"], UnresolvedLane.__name__)
             return
 
-        deadline = time.monotonic() + ACK_BUDGET_SECONDS
+        deadline = self._deadline(ACK_BUDGET_SECONDS)
         for row in candidates:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -841,8 +900,13 @@ class WakeEmitter:
     def _run_sender(self, argv):
         # One physical submission per call; no retry loop here. The sender's
         # line contract decides the outcome: a REFUSED: line is a non-terminal
-        # no-send, only a real success marker is a delivery.
-        completed = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+        # no-send, only a real success marker is a delivery. The wait is bounded
+        # by the active hook deadline, so the hook returns inside its budget
+        # instead of being abandoned by the host's 30 s callback timeout.
+        deadline = getattr(self, "_sender_deadline", None)
+        timeout = SENDER_TIMEOUT_SECONDS if deadline is None else max(
+            0.0, deadline - time.monotonic())
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
         return _classify_sender_output(output, completed.returncode)
 
@@ -876,6 +940,7 @@ def build_from_ctx(ctx):
         pane_read_path=config("pane_read_path", str(Path.home() / ".hermes" / "scripts" / "pane_read.py")),
         python_executable=config("python_executable", None),
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
+        hook_budget_seconds=config("hook_budget_seconds", HOOK_BUDGET_SECONDS),
         lane=config("lane", None),
         enabled=bool(config("enabled", False)),
         scope=config("scope", None),
