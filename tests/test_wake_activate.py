@@ -232,6 +232,18 @@ def test_b4_refuses_dirty_working_tree(tmp_path):
     assert sha(fx.config) == pre
 
 
+def test_b4_refuses_non_git_source(tmp_path):
+    fx = build_home(tmp_path)
+    pre = sha(fx.config)
+    # git object files are read-only on Windows; rename .git aside rather than rmtree.
+    shutil.move(str(fx.repo / ".git"), str(fx.repo / ".git.disabled"))
+    proc = run_tool(fx, ["--apply"])
+    assert proc.returncode != 0
+    assert not fx.dst.exists()
+    assert sha(fx.config) == pre
+    assert not fx.record.exists()
+
+
 # ---- B5: preconditions fail closed before any write ------------------------
 
 @pytest.mark.parametrize("lanes", [

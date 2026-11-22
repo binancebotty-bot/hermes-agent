@@ -277,6 +277,17 @@ def git_head(repo):
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def git_toplevel(repo):
+    proc = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    try:
+        return str(Path(proc.stdout.strip()).resolve())
+    except OSError:
+        return None
+
+
 def git_dirty(repo):
     proc = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
                           capture_output=True, text=True)
@@ -356,9 +367,16 @@ def apply(paths, expected_sha=None):
             print(f"REFUSED: {error}")
         return 2
 
+    toplevel = git_toplevel(paths.repo)
+    if toplevel is None:
+        print(f"REFUSED: source repo is not a git repository: {paths.repo}")
+        return 2
+    if Path(toplevel) != Path(paths.repo).resolve():
+        print(f"REFUSED: {paths.repo} is not a git worktree root (git resolved {toplevel})")
+        return 2
     head = git_head(paths.repo)
     if head is None:
-        print(f"REFUSED: source repo is not a git repository: {paths.repo}")
+        print(f"REFUSED: git rev-parse HEAD failed in {paths.repo}")
         return 2
     dirty = git_dirty(paths.repo)
     if dirty is None:

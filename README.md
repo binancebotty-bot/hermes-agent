@@ -53,8 +53,8 @@ $PY scripts/rehearse_activation.py
 
 ## Evidence pointers
 
-- RED: `18 failed, 3 passed`, exit 1 (baseline tool/plugin).
-- GREEN: `21 passed`, exit 0.
+- RED: `19 failed, 3 passed`, exit 1 (baseline tool/plugin).
+- GREEN: `22 passed`, exit 0.
 - Regression: the upstream wake-emitter suite run against this plugin copy — `54 passed, 1 skipped`.
 - Real config round-trip: enabling on a **copy** of the real `config.yaml` produces a 23-line diff
   (one list entry + the plugin's settings block); no comments exist in the real file and none are lost.

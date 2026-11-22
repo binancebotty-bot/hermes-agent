@@ -1,9 +1,9 @@
-F...FFFFFFFFFFFFFFFFF                                                    [100%]
+F...FFFFFFFFFFFFFFFFFF                                                   [100%]
 ================================== FAILURES ===================================
 ________________ test_defaults_are_absolute_and_lane_is_unset _________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_defaults_are_absolute_and0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DC4C4C10D0>
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_defaults_are_absolute_and0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001BAB100B490>
 
     def test_defaults_are_absolute_and_lane_is_unset(tmp_path, monkeypatch):
         _patch_home(monkeypatch, tmp_path)
@@ -12,12 +12,12 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DC4C4C10D0>
 >       assert worker.lane is None, "default lane must be unset so resolve_origin refuses"
 E       AssertionError: default lane must be unset so resolve_origin refuses
 E       assert 'hermes:coordinator' is None
-E        +  where 'hermes:coordinator' = <wake-emitter.emitter.WakeEmitter object at 0x000001DC4C4C3C50>.lane
+E        +  where 'hermes:coordinator' = <wake-emitter.emitter.WakeEmitter object at 0x000001BAB1008D90>.lane
 
 C:\Users\wigmore\oc-runs\w1-activate-w1\tests\test_emitter_defaults.py:54: AssertionError
 ________________ test_b1_apply_writes_explicit_config_section _________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b1_apply_writes_explicit_0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b1_apply_writes_explicit_0')
 
     def test_b1_apply_writes_explicit_config_section(tmp_path):
         fx = build_home(tmp_path)
@@ -31,7 +31,7 @@ E       TypeError: 'NoneType' object is not subscriptable
 tests\test_wake_activate.py:138: TypeError
 ______________ test_b3_rollback_restores_config_byte_identically ______________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b3_rollback_restores_conf0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b3_rollback_restores_conf0')
 
     def test_b3_rollback_restores_config_byte_identically(tmp_path):
         fx = build_home(tmp_path)
@@ -39,13 +39,13 @@ tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/py
         assert run_tool(fx, ["--apply"]).returncode == 0
 >       assert sha(fx.config) != pre
 E       AssertionError: assert '94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e' != '94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e'
-E        +  where '94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e' = sha(WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b3_rollback_restores_conf0/home/.hermes/config.yaml'))
-E        +    where WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b3_rollback_restores_conf0/home/.hermes/config.yaml') = namespace(home=WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b3_rollback_restore...pData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b3_rollback_restores_conf0/home/.hermes/state/event_outbox.jsonl')).config
+E        +  where '94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e' = sha(WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b3_rollback_restores_conf0/home/.hermes/config.yaml'))
+E        +    where WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b3_rollback_restores_conf0/home/.hermes/config.yaml') = namespace(home=WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b3_rollback_restore...pData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b3_rollback_restores_conf0/home/.hermes/state/event_outbox.jsonl')).config
 
 tests\test_wake_activate.py:163: AssertionError
 _________________ test_b4_apply_pins_sha_and_per_file_hashes __________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b4_apply_pins_sha_and_per0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b4_apply_pins_sha_and_per0')
 
     def test_b4_apply_pins_sha_and_per_file_hashes(tmp_path):
         fx = build_home(tmp_path)
@@ -60,7 +60,7 @@ E       KeyError: 'source_sha'
 tests\test_wake_activate.py:195: KeyError
 _____________________ test_b4_refuses_wrong_expected_sha ______________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b4_refuses_wrong_expected0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b4_refuses_wrong_expected0')
 
     def test_b4_refuses_wrong_expected_sha(tmp_path):
         fx = build_home(tmp_path)
@@ -74,7 +74,7 @@ E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\herme
 tests\test_wake_activate.py:209: AssertionError
 ____________________ test_b4_refuses_missing_expected_sha _____________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b4_refuses_missing_expect0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b4_refuses_missing_expect0')
 
     def test_b4_refuses_missing_expected_sha(tmp_path):
         fx = build_home(tmp_path)
@@ -88,7 +88,7 @@ E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\herme
 tests\test_wake_activate.py:220: AssertionError
 _____________________ test_b4_refuses_dirty_working_tree ______________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b4_refuses_dirty_working_0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b4_refuses_dirty_working_0')
 
     def test_b4_refuses_dirty_working_tree(tmp_path):
         fx = build_home(tmp_path)
@@ -100,9 +100,24 @@ E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
 tests\test_wake_activate.py:230: AssertionError
+_______________________ test_b4_refuses_non_git_source ________________________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b4_refuses_non_git_source0')
+
+    def test_b4_refuses_non_git_source(tmp_path):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        # git object files are read-only on Windows; rename .git aside rather than rmtree.
+        shutil.move(str(fx.repo / ".git"), str(fx.repo / ".git.disabled"))
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode != 0
+E       AssertionError: assert 0 != 0
+E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
+
+tests\test_wake_activate.py:241: AssertionError
 ___________ test_b5_unresolvable_lane_refuses_before_write[lanes0] ____________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_unresolvable_lane_refu0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_unresolvable_lane_refu0')
 lanes = {}
 
     @pytest.mark.parametrize("lanes", [
@@ -119,10 +134,10 @@ lanes = {}
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:247: AssertionError
+tests\test_wake_activate.py:259: AssertionError
 ___________ test_b5_unresolvable_lane_refuses_before_write[lanes1] ____________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_unresolvable_lane_refu1')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_unresolvable_lane_refu1')
 lanes = {'gpt6:assistant': {'conv': 'https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1'}}
 
     @pytest.mark.parametrize("lanes", [
@@ -139,10 +154,10 @@ lanes = {'gpt6:assistant': {'conv': 'https://chatgpt.com/c/6b01a297-292c-83ed-9f
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:247: AssertionError
+tests\test_wake_activate.py:259: AssertionError
 ___________ test_b5_unresolvable_lane_refuses_before_write[lanes2] ____________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_unresolvable_lane_refu2')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_unresolvable_lane_refu2')
 lanes = {'gpt6:assistant': {'generation': 1}}
 
     @pytest.mark.parametrize("lanes", [
@@ -159,10 +174,10 @@ lanes = {'gpt6:assistant': {'generation': 1}}
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:247: AssertionError
+tests\test_wake_activate.py:259: AssertionError
 ___________ test_b5_unresolvable_lane_refuses_before_write[lanes3] ____________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_unresolvable_lane_refu3')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_unresolvable_lane_refu3')
 lanes = {'gpt6:assistant': {'conv': 'https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1', 'generation': 1, 'retired_unbound': {'reason': 'retired'}}}
 
     @pytest.mark.parametrize("lanes", [
@@ -179,10 +194,10 @@ lanes = {'gpt6:assistant': {'conv': 'https://chatgpt.com/c/6b01a297-292c-83ed-9f
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:247: AssertionError
+tests\test_wake_activate.py:259: AssertionError
 _________________ test_b5_missing_sender_refuses_before_write _________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_missing_sender_refuses0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_missing_sender_refuses0')
 
     def test_b5_missing_sender_refuses_before_write(tmp_path):
         fx = build_home(tmp_path, sender_exists=False)
@@ -192,10 +207,10 @@ tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/py
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:257: AssertionError
+tests\test_wake_activate.py:269: AssertionError
 ________________ test_b5_relative_sender_refuses_before_write _________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_relative_sender_refuse0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_relative_sender_refuse0')
 
     def test_b5_relative_sender_refuses_before_write(tmp_path):
         fx = build_home(tmp_path)
@@ -206,10 +221,10 @@ tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/py
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:267: AssertionError
+tests\test_wake_activate.py:279: AssertionError
 ________________ test_b5_unreadable_pane_refuses_before_write _________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_unreadable_pane_refuse0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_unreadable_pane_refuse0')
 
     def test_b5_unreadable_pane_refuses_before_write(tmp_path):
         fx = build_home(tmp_path, pane_ok=False)
@@ -219,10 +234,10 @@ tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/py
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:276: AssertionError
+tests\test_wake_activate.py:288: AssertionError
 _________________ test_b5_disabled_list_refuses_before_write __________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b5_disabled_list_refuses_0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b5_disabled_list_refuses_0')
 
     def test_b5_disabled_list_refuses_before_write(tmp_path):
         fx = build_home(tmp_path, config_text=FAKE_CONFIG.replace(
@@ -233,10 +248,10 @@ tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/py
 E       AssertionError: assert 0 != 0
 E        +  where 0 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...urce hashes == installed hashes: True\nNEXT: enable the flag, then prove one cycle. Rollback: --rollback\n', stderr='').returncode
 
-tests\test_wake_activate.py:286: AssertionError
+tests\test_wake_activate.py:298: AssertionError
 ___________ test_b6_status_reports_read_flag_and_effective_settings ___________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b6_status_reports_read_fl0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b6_status_reports_read_fl0')
 
     def test_b6_status_reports_read_flag_and_effective_settings(tmp_path):
         fx = build_home(tmp_path)
@@ -247,10 +262,10 @@ E
 E         - OFF
 E         + UNKNOWN (config key not read by this staging script)
 
-tests\test_wake_activate.py:296: AssertionError
+tests\test_wake_activate.py:308: AssertionError
 ___________ test_b6_status_reports_disabled_when_listed_in_disabled ___________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_b6_status_reports_disable0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_b6_status_reports_disable0')
 
     def test_b6_status_reports_disabled_when_listed_in_disabled(tmp_path):
         fx = build_home(tmp_path, config_text=FAKE_CONFIG.replace(
@@ -262,10 +277,10 @@ E
 E         - DISABLED
 E         + UNKNOWN (config key not read by this staging script)
 
-tests\test_wake_activate.py:313: AssertionError
+tests\test_wake_activate.py:325: AssertionError
 ____________________ test_rehearsal_apply_status_rollback _____________________
 
-tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9651/test_rehearsal_apply_status_ro0')
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9656/test_rehearsal_apply_status_ro0')
 
     def test_rehearsal_apply_status_rollback(tmp_path):
         fx = build_home(tmp_path)
@@ -278,7 +293,7 @@ tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/py
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 E       TypeError: 'NoneType' object is not subscriptable
 
-tests\test_wake_activate.py:325: TypeError
+tests\test_wake_activate.py:337: TypeError
 =========================== short test summary info ===========================
 FAILED tests/test_emitter_defaults.py::test_defaults_are_absolute_and_lane_is_unset
 FAILED tests/test_wake_activate.py::test_b1_apply_writes_explicit_config_section
@@ -287,6 +302,7 @@ FAILED tests/test_wake_activate.py::test_b4_apply_pins_sha_and_per_file_hashes
 FAILED tests/test_wake_activate.py::test_b4_refuses_wrong_expected_sha - Asse...
 FAILED tests/test_wake_activate.py::test_b4_refuses_missing_expected_sha - As...
 FAILED tests/test_wake_activate.py::test_b4_refuses_dirty_working_tree - Asse...
+FAILED tests/test_wake_activate.py::test_b4_refuses_non_git_source - Assertio...
 FAILED tests/test_wake_activate.py::test_b5_unresolvable_lane_refuses_before_write[lanes0]
 FAILED tests/test_wake_activate.py::test_b5_unresolvable_lane_refuses_before_write[lanes1]
 FAILED tests/test_wake_activate.py::test_b5_unresolvable_lane_refuses_before_write[lanes2]
@@ -298,4 +314,4 @@ FAILED tests/test_wake_activate.py::test_b5_disabled_list_refuses_before_write
 FAILED tests/test_wake_activate.py::test_b6_status_reports_read_flag_and_effective_settings
 FAILED tests/test_wake_activate.py::test_b6_status_reports_disabled_when_listed_in_disabled
 FAILED tests/test_wake_activate.py::test_rehearsal_apply_status_rollback - Ty...
-18 failed, 3 passed in 5.90s
+19 failed, 3 passed in 5.77s
