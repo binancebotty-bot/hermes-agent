@@ -127,3 +127,57 @@ outcomes, so they cannot be retried into a wrong conversation.
 
 **Evidence:** RED `PYTEST_EXIT=1` (9 failed) — `RED_W1B.txt`; GREEN `PYTEST_EXIT=0`
 (9 passed) — `GREEN_W1B.txt`; full suite `FULL_EXIT=0` (132 passed) — `GREEN_FULL_W1B.txt`.
+
+## W1d — three fail-closed ACK gates
+
+W1c bound ACK reconciliation to the delivered conversation/generation but left three
+fail-open holes. All three are now closed in `plugins/wake-emitter/emitter.py`; the
+`baseline/` tree is untouched and no live install, config, gateway, cron or
+conversation was written.
+
+1. **Generation absence** — a bound event whose conversation has no peer-map entry
+   records `ACK_GENERATION_UNKNOWN` and is never settled on absence. It stays
+   retryable, so a later peer-map entry can settle it. A mismatched generation still
+   records `ACK_GENERATION_ROLLED` (terminal), as before.
+2. **Time binding** — an ACK only settles when its turn carries a UTC timestamp at
+   or after the recorded delivery utc, allowing a named skew tolerance
+   `ack_skew_seconds` (default `ACK_SKEW_SECONDS = 30.0`, operator-settable via
+   plugin settings and reported by `--status`). A missing timestamp is
+   `ACK_TIME_UNPROVEN`; a timestamp beyond the tolerance is `ACK_BEFORE_DELIVERY`.
+   Both are retryable refusals, never settlements.
+3. **Window truncation** — a reply found without its delivery turn is no longer
+   accepted from the tail alone. One bounded wider read (`ACK_REREAD_WINDOW = 400`,
+   `--window`) is attempted inside the existing ACK sweep deadline; if the delivery
+   turn is still absent, the outcome is `ACK_DELIVERY_UNPROVEN`. The pane record's
+   `utc` is now preserved by `_pane_turns` so real readbacks can bind time.
+
+`_read_pane_turns` still has two production callers (the ACK sweep and
+`_resume_event`); only the ACK sweep uses the wider-window argument. Graphify
+rebuilt from the reviewed tree: 647 nodes / 1669 edges, new helpers `_turn_utc`
+(1 production caller) and `_parse_utc` (2 production callers) present.
+
+### Which ACK cases are PROVEN vs UNPROVEN
+
+**PROVEN — may settle `DELIVERED_ACKED`:** an ACK in the event's own bound
+conversation (or a configured-lane global-fallback event), with the delivery turn
+present in the readback window, the peer map holding the conversation at the frozen
+generation, and an ACK turn timestamp at/after the delivery utc minus
+`ack_skew_seconds`. Proved by `test_a_...` / `test_f_...` in `tests/test_ack_binding.py`,
+`test_a_pending_...` / `test_hook_invocation_...` in `tests/test_pending_reconcile.py`,
+and W1d case (c). Their assertions are unchanged; only the fixtures were upgraded
+to carry the delivery turn and turn timestamp the new gates require.
+
+**UNPROVEN / REFUSED — never settle:** peer-map entry absent
+(`ACK_GENERATION_UNKNOWN`, retryable); ACK turn timestamp before delivery beyond
+skew (`ACK_BEFORE_DELIVERY`); ACK turn with no timestamp (`ACK_TIME_UNPROVEN`);
+delivery turn missing from the window even after the one wider read
+(`ACK_DELIVERY_UNPROVEN`); generation rolled after send (`ACK_GENERATION_ROLLED`);
+ACK in a different conversation, ACK before the delivery turn in turn order, or a
+reply without the nonce (W1c cases (b)/(c)/(d), unchanged). All remain open to a
+later, better readback except the terminal `ACK_GENERATION_ROLLED`.
+
+**Evidence:** RED `PYTEST_EXIT=1` (6 failed, each named assertion in
+`RED_W1D.txt`), GREEN `PYTEST_EXIT=0` (6 passed) — `GREEN_W1D_NEW.txt`; full suite
+`PYTEST_EXIT=0` (144 passed = 138 pre-existing + 6 new) — `GREEN_FULL_W1D.txt`.
+Adversarial re-run of the new tests against the untouched `baseline/wake-emitter`
+also fails 6/6 (`PYTEST_EXIT=1`) — `RED_W1D_BASELINE.txt`.

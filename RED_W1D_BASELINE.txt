@@ -1,0 +1,244 @@
+FFFFFF                                                                   [100%]
+================================== FAILURES ===================================
+_ test_a_absent_peer_map_entry_is_unknown_not_settled_then_settles_when_present _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10036/test_a_absent_peer_map_entry_i0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000272DFC54D90>
+
+    def test_a_absent_peer_map_entry_is_unknown_not_settled_then_settles_when_present(
+            tmp_path, monkeypatch):
+>       worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1d-a")
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_w1d_fail_closed.py:92: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_w1d_fail_closed.py:49: in _deliver
+    emitter = _load()
+              ^^^^^^^
+tests\test_binding.py:33: in _load
+    return importlib.import_module("wake-emitter.emitter")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\.hermes\hermes-agent\.hermes-runtime\python\generation-1785062892-29052-6aa4955e\cpython-3.11-windows-x86_64-none\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1126: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:241: in _call_with_frames_removed
+    ???
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+name = 'wake-emitter', import_ = <function _gcd_import at 0x00000272DC2E3D80>
+
+>   ???
+E   ModuleNotFoundError: No module named 'wake-emitter'
+
+<frozen importlib._bootstrap>:1140: ModuleNotFoundError
+_____________ test_b_ack_timestamp_predating_delivery_is_refused ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10036/test_b_ack_timestamp_predating0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000272DFD71590>
+
+    def test_b_ack_timestamp_predating_delivery_is_refused(tmp_path, monkeypatch):
+>       worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-b")
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_w1d_fail_closed.py:120: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_w1d_fail_closed.py:49: in _deliver
+    emitter = _load()
+              ^^^^^^^
+tests\test_binding.py:33: in _load
+    return importlib.import_module("wake-emitter.emitter")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\.hermes\hermes-agent\.hermes-runtime\python\generation-1785062892-29052-6aa4955e\cpython-3.11-windows-x86_64-none\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1126: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:241: in _call_with_frames_removed
+    ???
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+name = 'wake-emitter', import_ = <function _gcd_import at 0x00000272DC2E3D80>
+
+>   ???
+E   ModuleNotFoundError: No module named 'wake-emitter'
+
+<frozen importlib._bootstrap>:1140: ModuleNotFoundError
+______ test_c_ack_timestamp_after_delivery_settles_with_named_tolerance _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10036/test_c_ack_timestamp_after_del0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000272DFD82110>
+
+    def test_c_ack_timestamp_after_delivery_settles_with_named_tolerance(
+            tmp_path, monkeypatch):
+>       emitter = _load()
+                  ^^^^^^^
+
+tests\test_w1d_fail_closed.py:136: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_binding.py:33: in _load
+    return importlib.import_module("wake-emitter.emitter")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\.hermes\hermes-agent\.hermes-runtime\python\generation-1785062892-29052-6aa4955e\cpython-3.11-windows-x86_64-none\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1126: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:241: in _call_with_frames_removed
+    ???
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+name = 'wake-emitter', import_ = <function _gcd_import at 0x00000272DC2E3D80>
+
+>   ???
+E   ModuleNotFoundError: No module named 'wake-emitter'
+
+<frozen importlib._bootstrap>:1140: ModuleNotFoundError
+______________ test_d_ack_turn_without_timestamp_does_not_settle ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10036/test_d_ack_turn_without_timest0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000272DFD12290>
+
+    def test_d_ack_turn_without_timestamp_does_not_settle(tmp_path, monkeypatch):
+>       worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-d")
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_w1d_fail_closed.py:159: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_w1d_fail_closed.py:49: in _deliver
+    emitter = _load()
+              ^^^^^^^
+tests\test_binding.py:33: in _load
+    return importlib.import_module("wake-emitter.emitter")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\.hermes\hermes-agent\.hermes-runtime\python\generation-1785062892-29052-6aa4955e\cpython-3.11-windows-x86_64-none\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1126: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:241: in _call_with_frames_removed
+    ???
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+name = 'wake-emitter', import_ = <function _gcd_import at 0x00000272DC2E3D80>
+
+>   ???
+E   ModuleNotFoundError: No module named 'wake-emitter'
+
+<frozen importlib._bootstrap>:1140: ModuleNotFoundError
+____ test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10036/test_e_window_omitting_deliver0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000272DFCA5110>
+
+    def test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven(
+            tmp_path, monkeypatch):
+>       emitter = _load()
+                  ^^^^^^^
+
+tests\test_w1d_fail_closed.py:175: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_binding.py:33: in _load
+    return importlib.import_module("wake-emitter.emitter")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\.hermes\hermes-agent\.hermes-runtime\python\generation-1785062892-29052-6aa4955e\cpython-3.11-windows-x86_64-none\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1126: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:241: in _call_with_frames_removed
+    ???
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+name = 'wake-emitter', import_ = <function _gcd_import at 0x00000272DC2E3D80>
+
+>   ???
+E   ModuleNotFoundError: No module named 'wake-emitter'
+
+<frozen importlib._bootstrap>:1140: ModuleNotFoundError
+_______________ test_f_skew_tolerance_is_read_from_named_config _______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10036/test_f_skew_tolerance_is_read_0')
+
+    def test_f_skew_tolerance_is_read_from_named_config(tmp_path):
+>       emitter = _load()
+                  ^^^^^^^
+
+tests\test_w1d_fail_closed.py:200: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_binding.py:33: in _load
+    return importlib.import_module("wake-emitter.emitter")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\.hermes\hermes-agent\.hermes-runtime\python\generation-1785062892-29052-6aa4955e\cpython-3.11-windows-x86_64-none\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1126: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:241: in _call_with_frames_removed
+    ???
+<frozen importlib._bootstrap>:1204: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1176: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+name = 'wake-emitter', import_ = <function _gcd_import at 0x00000272DC2E3D80>
+
+>   ???
+E   ModuleNotFoundError: No module named 'wake-emitter'
+
+<frozen importlib._bootstrap>:1140: ModuleNotFoundError
+=========================== short test summary info ===========================
+FAILED tests/test_w1d_fail_closed.py::test_a_absent_peer_map_entry_is_unknown_not_settled_then_settles_when_present
+FAILED tests/test_w1d_fail_closed.py::test_b_ack_timestamp_predating_delivery_is_refused
+FAILED tests/test_w1d_fail_closed.py::test_c_ack_timestamp_after_delivery_settles_with_named_tolerance
+FAILED tests/test_w1d_fail_closed.py::test_d_ack_turn_without_timestamp_does_not_settle
+FAILED tests/test_w1d_fail_closed.py::test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven
+FAILED tests/test_w1d_fail_closed.py::test_f_skew_tolerance_is_read_from_named_config
+6 failed in 0.22s
+PYTEST_EXIT=1

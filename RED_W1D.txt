@@ -1,0 +1,137 @@
+FFFFFF                                                                   [100%]
+================================== FAILURES ===================================
+_ test_a_absent_peer_map_entry_is_unknown_not_settled_then_settles_when_present _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10021/test_a_absent_peer_map_entry_i0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015F5B8FA390>
+
+    def test_a_absent_peer_map_entry_is_unknown_not_settled_then_settles_when_present(
+            tmp_path, monkeypatch):
+        worker, journal, eid, sends = _deliver(tmp_path, monkeypatch, "w1d-a")
+        peer = json.loads(worker.peer_map_path.read_text(encoding="utf-8"))
+        peer["lanes"] = {LANE_A: peer["lanes"][LANE_A]}  # CONV_B entry removed
+        worker.peer_map_path.write_text(json.dumps(peer), encoding="utf-8")
+    
+        utc = _delivery_utc(journal, eid)
+        turns = [_delivery_turn(eid, utc), _ack_turn(eid, _shift(utc, 5))]
+        _sweep(worker, monkeypatch, lambda lane, window: list(turns))
+    
+        row = _outcomes(journal, eid)[-1]
+>       assert row["outcome"] == "ACK_GENERATION_UNKNOWN", \
+            "absent peer-map entry must record ACK_GENERATION_UNKNOWN, got %s" % row["outcome"]
+E       AssertionError: absent peer-map entry must record ACK_GENERATION_UNKNOWN, got DELIVERED_ACKED
+E       assert 'DELIVERED_ACKED' == 'ACK_GENERATION_UNKNOWN'
+E         
+E         - ACK_GENERATION_UNKNOWN
+E         + DELIVERED_ACKED
+
+tests\test_w1d_fail_closed.py:102: AssertionError
+_____________ test_b_ack_timestamp_predating_delivery_is_refused ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10021/test_b_ack_timestamp_predating0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015F5B885950>
+
+    def test_b_ack_timestamp_predating_delivery_is_refused(tmp_path, monkeypatch):
+        worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-b")
+        utc = _delivery_utc(journal, eid)
+        turns = [_delivery_turn(eid, utc), _ack_turn(eid, _shift(utc, -120))]
+        _sweep(worker, monkeypatch, lambda lane, window: list(turns))
+    
+        row = _outcomes(journal, eid)[-1]
+>       assert row["outcome"] == "ACK_BEFORE_DELIVERY", \
+            "an ACK turn predating delivery must be refused, got %s" % row["outcome"]
+E       AssertionError: an ACK turn predating delivery must be refused, got DELIVERED_ACKED
+E       assert 'DELIVERED_ACKED' == 'ACK_BEFORE_DELIVERY'
+E         
+E         - ACK_BEFORE_DELIVERY
+E         + DELIVERED_ACKED
+
+tests\test_w1d_fail_closed.py:126: AssertionError
+______ test_c_ack_timestamp_after_delivery_settles_with_named_tolerance _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10021/test_c_ack_timestamp_after_del0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015F5B8DB010>
+
+    def test_c_ack_timestamp_after_delivery_settles_with_named_tolerance(
+            tmp_path, monkeypatch):
+        emitter = _load()
+        worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-c")
+>       assert worker.ack_skew_seconds == emitter.ACK_SKEW_SECONDS, \
+               ^^^^^^^^^^^^^^^^^^^^^^^
+            "the clock-skew tolerance must be a named config value"
+E       AttributeError: 'WakeEmitter' object has no attribute 'ack_skew_seconds'
+
+tests\test_w1d_fail_closed.py:138: AttributeError
+______________ test_d_ack_turn_without_timestamp_does_not_settle ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10021/test_d_ack_turn_without_timest0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015F5B8F8910>
+
+    def test_d_ack_turn_without_timestamp_does_not_settle(tmp_path, monkeypatch):
+        worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-d")
+        utc = _delivery_utc(journal, eid)
+        turns = [_delivery_turn(eid, utc), _ack_turn(eid)]  # no ack timestamp
+        _sweep(worker, monkeypatch, lambda lane, window: list(turns))
+    
+        row = _outcomes(journal, eid)[-1]
+>       assert row["outcome"] == "ACK_TIME_UNPROVEN", \
+            "a timestamp-less ACK turn must be UNPROVEN, got %s" % row["outcome"]
+E       AssertionError: a timestamp-less ACK turn must be UNPROVEN, got DELIVERED_ACKED
+E       assert 'DELIVERED_ACKED' == 'ACK_TIME_UNPROVEN'
+E         
+E         - ACK_TIME_UNPROVEN
+E         + DELIVERED_ACKED
+
+tests\test_w1d_fail_closed.py:157: AssertionError
+____ test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10021/test_e_window_omitting_deliver0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015F5B84F2D0>
+
+    def test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven(
+            tmp_path, monkeypatch):
+        emitter = _load()
+        worker, journal, eid, _ = _deliver(tmp_path, monkeypatch, "w1d-e")
+        utc = _delivery_utc(journal, eid)
+        turns = [_ack_turn(eid, _shift(utc, 5))]  # delivery turn absent from window
+        reads = _sweep(worker, monkeypatch, lambda lane, window: list(turns))
+    
+        row = _outcomes(journal, eid)[-1]
+>       assert row["outcome"] == "ACK_DELIVERY_UNPROVEN", \
+            "a truncated window must be UNPROVEN, got %s" % row["outcome"]
+E       AssertionError: a truncated window must be UNPROVEN, got DELIVERED_ACKED
+E       assert 'DELIVERED_ACKED' == 'ACK_DELIVERY_UNPROVEN'
+E         
+E         - ACK_DELIVERY_UNPROVEN
+E         + DELIVERED_ACKED
+
+tests\test_w1d_fail_closed.py:174: AssertionError
+_______________ test_f_skew_tolerance_is_read_from_named_config _______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10021/test_f_skew_tolerance_is_read_0')
+
+    def test_f_skew_tolerance_is_read_from_named_config(tmp_path):
+        emitter = _load()
+    
+        class Ctx:
+            logger = None
+    
+            def get_config(self, key, default=None):
+                return {"ack_skew_seconds": 7}.get(key, default)
+    
+        worker = emitter.build_from_ctx(Ctx())
+>       assert worker.ack_skew_seconds == 7, \
+               ^^^^^^^^^^^^^^^^^^^^^^^
+            "ack_skew_seconds must be a named, operator-settable config value"
+E       AttributeError: 'WakeEmitter' object has no attribute 'ack_skew_seconds'
+
+tests\test_w1d_fail_closed.py:194: AttributeError
+=========================== short test summary info ===========================
+FAILED tests/test_w1d_fail_closed.py::test_a_absent_peer_map_entry_is_unknown_not_settled_then_settles_when_present
+FAILED tests/test_w1d_fail_closed.py::test_b_ack_timestamp_predating_delivery_is_refused
+FAILED tests/test_w1d_fail_closed.py::test_c_ack_timestamp_after_delivery_settles_with_named_tolerance
+FAILED tests/test_w1d_fail_closed.py::test_d_ack_turn_without_timestamp_does_not_settle
+FAILED tests/test_w1d_fail_closed.py::test_e_window_omitting_delivery_turn_rereads_once_and_stays_unproven
+FAILED tests/test_w1d_fail_closed.py::test_f_skew_tolerance_is_read_from_named_config
+6 failed in 0.38s
+PYTEST_EXIT=1

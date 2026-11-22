@@ -197,6 +197,7 @@ def effective_settings(config, source):
         "sender_path": worker.sender_path,
         "pane_read_path": worker.pane_read_path,
         "ack_horizon_seconds": worker.ack_horizon_seconds,
+        "ack_skew_seconds": worker.ack_skew_seconds,
     }
 
 

@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Bounded ACK reconciliation: at most three events per invocation, one pane_read
@@ -28,6 +28,17 @@ ACK_MAX_ERRORS = 3
 # Truthful ACK-side refusal: the bound conversation rotated after the send, so
 # its pane is no longer the conversation that received this event.
 ACK_GENERATION_ROLLED = "ACK_GENERATION_ROLLED"
+# W1d fail-closed ACK outcomes. All are retryable: later evidence may settle.
+ACK_GENERATION_UNKNOWN = "ACK_GENERATION_UNKNOWN"
+ACK_DELIVERY_UNPROVEN = "ACK_DELIVERY_UNPROVEN"
+ACK_TIME_UNPROVEN = "ACK_TIME_UNPROVEN"
+ACK_BEFORE_DELIVERY = "ACK_BEFORE_DELIVERY"
+# Clock skew tolerated when binding ACK turn time to delivery time. Named config,
+# not a literal buried in the sweep: operators set it via ack_skew_seconds.
+ACK_SKEW_SECONDS = 30.0
+# Exactly one wider pane window is allowed when a reply's delivery turn is
+# truncated out of the readback; it shares the existing ACK sweep deadline.
+ACK_REREAD_WINDOW = 400
 # Where an event was delivered, frozen on its write-ahead attempt row at send
 # time and carried onto the ACK outcome so a fallback event is labelled.
 ACK_SOURCE_BOUND = "bound"
@@ -71,6 +82,30 @@ class UnresolvedLane(Exception):
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_utc(raw):
+    """Parse an ISO-8601 stamp to an aware datetime, or None when absent/invalid."""
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def _turn_utc(turn):
+    """Timestamp carried by a pane turn record, or None when the readback has none."""
+    if not isinstance(turn, dict):
+        return None
+    for key in ("utc", "timestamp"):
+        raw = turn.get(key)
+        if isinstance(raw, str) and raw:
+            return raw
+    return None
 
 
 # -- cross-process advisory lock ------------------------------------------
@@ -232,7 +267,7 @@ def _pane_document(stdout):
 
 
 def _pane_turns(stdout):
-    """Extract turn texts from pane_read's final JSON document.
+    """Extract turn records from pane_read's final JSON document.
 
     The live panes match the ``main-div-group`` selector, so every role comes back
     ``unknown`` and role cannot be the acceptance mechanism. Each text is instead
@@ -242,7 +277,8 @@ def _pane_turns(stdout):
     data = _pane_document(stdout)
     if data is None:
         raise PaneReadNoOutput()
-    return [turn.get("text") for turn in data["turns"]
+    # Keep the whole record: its ``utc`` field is needed for timestamp binding.
+    return [turn for turn in data["turns"]
             if isinstance(turn, dict) and isinstance(turn.get("text"), str)]
 
 
@@ -300,7 +336,7 @@ def _delivery_candidate(text, event_id):
 
 
 def _delivery_present(turns, event_id):
-    return any(_delivery_candidate(text, event_id) for text in turns)
+    return any(_delivery_candidate(_turn_text(turn), event_id) for turn in turns)
 
 
 def _turn_text(turn):
@@ -332,10 +368,11 @@ def _ack_turn_index(turns, event_id):
     The nonce must be in the reply half of the turn (``_ack_candidate``), and
     the turn must follow the outbound delivery turn in the pane. If a combined
     turn embeds both halves, the reply follows the delivery inside that turn.
-    A pane window that omits the delivery turn keeps the historical behaviour
-    and may settle from the reply alone.
+    A pane window that omits the delivery turn proves nothing and is refused.
     """
     delivery_index = _delivery_turn_index(turns, event_id)
+    if delivery_index is None:
+        return None
     for index, turn in enumerate(turns):
         text = _turn_text(turn)
         if not _ack_candidate(text, event_id):
@@ -447,7 +484,8 @@ class WakeEmitter:
     """Append-only journal + guarded sender invocation. One instance per process."""
 
     def __init__(self, *, journal_path, peer_map_path, sender_path, pane_read_path=None,
-                 ack_horizon_seconds=ACK_HORIZON_SECONDS, lane=None, enabled=False, logger=None,
+                 ack_horizon_seconds=ACK_HORIZON_SECONDS, ack_skew_seconds=ACK_SKEW_SECONDS,
+                 lane=None, enabled=False, logger=None,
                  lock_timeout_seconds=None, scope=None, python_executable=None,
                  hook_budget_seconds=HOOK_BUDGET_SECONDS,
                  retry_horizon_seconds=RETRY_HORIZON_SECONDS,
@@ -463,6 +501,7 @@ class WakeEmitter:
             Path.home() / ".hermes" / "scripts" / "pane_read.py"
         )
         self.ack_horizon_seconds = float(ack_horizon_seconds)
+        self.ack_skew_seconds = float(ack_skew_seconds)
         self.lane = lane
         self.enabled = bool(enabled)
         self.scope = scope
@@ -1104,7 +1143,10 @@ class WakeEmitter:
             # ACK reconciliation. DELIVERY_PENDING is open: the send outlived the
             # hook budget, so this sweep settles it from the pane, never by resend.
             state = latest.get(row.get("event_id"))
-            if state not in (DELIVERY_PENDING, "DELIVERED_UNACKED", "DELIVERED_UNCONFIRMED") and not (
+            retryable = (DELIVERY_PENDING, "DELIVERED_UNACKED", "DELIVERED_UNCONFIRMED",
+                         ACK_GENERATION_UNKNOWN, ACK_DELIVERY_UNPROVEN,
+                         ACK_TIME_UNPROVEN, ACK_BEFORE_DELIVERY)
+            if state not in retryable and not (
                 isinstance(state, str) and state.startswith("ACK_CHECK_ERROR:")
             ):
                 continue
@@ -1146,7 +1188,15 @@ class WakeEmitter:
             recorded_gen = delivery["generation"]
             if recorded_gen is not None:
                 observed = self._peer_generation(delivery["conv"])
-                if observed is not None and observed != recorded_gen:
+                if observed is None:
+                    # Absence is not a match: never settle from it. Retryable so
+                    # a later peer-map entry may still settle this event.
+                    if latest.get(event_id) != ACK_GENERATION_UNKNOWN:
+                        self._record(event_id, ACK_GENERATION_UNKNOWN,
+                                     {"conversation_id": delivery["conv"],
+                                      "recorded_generation": recorded_gen})
+                    continue
+                if observed != recorded_gen:
                     self._record(event_id, ACK_GENERATION_ROLLED,
                                  {"conversation_id": delivery["conv"],
                                   "recorded_generation": recorded_gen,
@@ -1154,6 +1204,14 @@ class WakeEmitter:
                     continue
             try:
                 turns = self._read_pane_turns(lane, remaining)
+                if (any(_ack_candidate(_turn_text(t), event_id) for t in turns)
+                        and _delivery_turn_index(turns, event_id) is None):
+                    # Hole 3: one bounded wider window inside the same sweep
+                    # deadline. Never accept a reply found on its own.
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        turns = self._read_pane_turns(
+                            lane, remaining, window=ACK_REREAD_WINDOW)
             except Exception as exc:
                 if pending:
                     # The pane is the only evidence for a pending send; an
@@ -1164,14 +1222,36 @@ class WakeEmitter:
                     self._note_ack_failure(rows, event_id, type(exc).__name__)
                 continue
             texts = [_turn_text(turn) for turn in turns]
+            if (any(_ack_candidate(text, event_id) for text in texts)
+                    and _delivery_turn_index(turns, event_id) is None):
+                # The delivery turn is still absent after the one wider read:
+                # the reply is unproven, not a nonce-only settlement.
+                if latest.get(event_id) != ACK_DELIVERY_UNPROVEN:
+                    self._record(event_id, ACK_DELIVERY_UNPROVEN,
+                                 {"lane": lane, "conversation_id": delivery["conv"]})
+                continue
             matched = _ack_turn_index(turns, event_id)
             if matched is not None:
-                digest = hashlib.sha256(texts[matched].encode("utf-8")).hexdigest()[:12]
-                self.record_assistant_ack(
-                    event_id, message_ref="%d:%s" % (matched, digest),
-                    matched_utc=_utc_now(), lane=lane,
-                    lane_source=delivery["source"],
-                    conversation_id=delivery["conv"], generation=recorded_gen)
+                ack_utc = _turn_utc(turns[matched])
+                ack_stamp = _parse_utc(ack_utc)
+                delivery_stamp = _parse_utc(delivery["utc"])
+                if ack_stamp is None or delivery_stamp is None:
+                    proof = ACK_TIME_UNPROVEN
+                elif delivery_stamp - ack_stamp > timedelta(seconds=self.ack_skew_seconds):
+                    proof = ACK_BEFORE_DELIVERY
+                else:
+                    proof = None
+                if proof is not None:
+                    if latest.get(event_id) != proof:
+                        self._record(event_id, proof,
+                                     {"delivery_utc": delivery["utc"], "ack_utc": ack_utc})
+                else:
+                    digest = hashlib.sha256(texts[matched].encode("utf-8")).hexdigest()[:12]
+                    self.record_assistant_ack(
+                        event_id, message_ref="%d:%s" % (matched, digest),
+                        matched_utc=_utc_now(), lane=lane,
+                        lane_source=delivery["source"],
+                        conversation_id=delivery["conv"], generation=recorded_gen)
             elif pending and _delivery_present(texts, event_id):
                 self._record(event_id, "DELIVERED_UNCONFIRMED")
             else:
@@ -1258,8 +1338,10 @@ class WakeEmitter:
                 pass
             raise
 
-    def _read_pane_turns(self, lane, timeout):
+    def _read_pane_turns(self, lane, timeout, window=None):
         argv = [self.python_executable, self.pane_read_path, lane, "--json"]
+        if window is not None:
+            argv += ["--window", str(window)]
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         if completed.returncode != 0:
             raise subprocess.CalledProcessError(completed.returncode, argv,
@@ -1270,13 +1352,8 @@ class WakeEmitter:
         raw = row.get("utc")
         if not raw:
             return None
-        try:
-            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - stamp).total_seconds()
+        stamp = _parse_utc(raw)
+        return None if stamp is None else (datetime.now(timezone.utc) - stamp).total_seconds()
 
     # -- delivery ----------------------------------------------------------
     def _sender_argv(self, origin, event_id, lane):
@@ -1341,6 +1418,7 @@ def build_from_ctx(ctx):
         pane_read_path=config("pane_read_path", str(Path.home() / ".hermes" / "scripts" / "pane_read.py")),
         python_executable=config("python_executable", None),
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
+        ack_skew_seconds=config("ack_skew_seconds", ACK_SKEW_SECONDS),
         hook_budget_seconds=config("hook_budget_seconds", HOOK_BUDGET_SECONDS),
         retry_horizon_seconds=config("retry_horizon_seconds", RETRY_HORIZON_SECONDS),
         binding_path=config("binding_path",

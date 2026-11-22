@@ -48,7 +48,7 @@ def _sweep(worker, monkeypatch, by_lane):
     """Second invocation: reconcile only, with a lane-aware stub pane read."""
     reads = []
 
-    def stub_pane(lane, timeout):
+    def stub_pane(lane, timeout, window=None):
         reads.append(lane)
         return list(by_lane.get(lane, []))
 
@@ -61,13 +61,28 @@ def _latest(journal, event_id):
     return _outcomes(journal, event_id)[-1]
 
 
+def _evidence(journal, event_id, *reply_texts):
+    """Pane records: delivery turn at the recorded utc, replies at/after it.
+
+    W1d requires both the delivery turn in the window and a turn timestamp;
+    the assertions below are unchanged, the fixture just carries that proof.
+    """
+    attempts = [r for r in _rows(journal) if r.get("kind") == "attempt"
+                and r.get("event_id") == event_id]
+    utc = attempts[-1]["utc"]
+    records = [{"text": "EVENT-ID: " + event_id, "utc": utc}]
+    records.extend({"text": text, "utc": utc} for text in reply_texts)
+    return records
+
+
 # --- (a) own bound conversation settles -----------------------------------
 
 def test_a_ack_in_own_bound_conversation_settles(tmp_path, monkeypatch):
     """(a) An ACK in the event's own bound conversation settles it."""
     worker, journal, eid, sends = _delivered_worker(
         tmp_path, monkeypatch, "task-ack-a", CONV_B)
-    reads, _ = _sweep(worker, monkeypatch, {LANE_B: ["WAKE-ACK " + eid]})
+    reads, _ = _sweep(worker, monkeypatch,
+                      {LANE_B: _evidence(journal, eid, "WAKE-ACK " + eid)})
 
     row = _latest(journal, eid)
     assert row["outcome"] == "DELIVERED_ACKED", \
@@ -170,7 +185,8 @@ def test_f_global_fallback_reconciles_from_configured_lane_and_is_labelled(
     worker, journal, eid, sends = _delivered_worker(
         tmp_path, monkeypatch, "task-ack-f", None, allow_fallback=True)
     assert sends[0][2] == LANE_A
-    reads, _ = _sweep(worker, monkeypatch, {LANE_A: ["WAKE-ACK " + eid]})
+    reads, _ = _sweep(worker, monkeypatch,
+                      {LANE_A: _evidence(journal, eid, "WAKE-ACK " + eid)})
 
     row = _latest(journal, eid)
     assert row["outcome"] == "DELIVERED_ACKED", \
