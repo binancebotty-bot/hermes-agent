@@ -1,0 +1,19 @@
+============================= test session starts =============================
+collecting ... collected 14 items
+
+tests/test_w1f_non_cron_wake.py::test_interactive_turn_is_out_of_scope_under_the_cron_allowlist PASSED [  7%]
+tests/test_w1f_non_cron_wake.py::test_require_task_id_false_alone_does_not_admit_an_interactive_turn PASSED [ 14%]
+tests/test_w1f_non_cron_wake.py::test_listed_interactive_session_records_delivers_and_settles PASSED [ 21%]
+tests/test_w1f_non_cron_wake.py::test_unlisted_interactive_session_stays_denied PASSED [ 28%]
+tests/test_w1f_non_cron_wake.py::test_malformed_interactive_sessions_denies_and_never_raises[local-interactive-session-w1f] PASSED [ 35%]
+tests/test_w1f_non_cron_wake.py::test_malformed_interactive_sessions_denies_and_never_raises[bad1] PASSED [ 42%]
+tests/test_w1f_non_cron_wake.py::test_malformed_interactive_sessions_denies_and_never_raises[bad2] PASSED [ 50%]
+tests/test_w1f_non_cron_wake.py::test_malformed_interactive_sessions_denies_and_never_raises[bad3] PASSED [ 57%]
+tests/test_w1f_non_cron_wake.py::test_malformed_interactive_sessions_denies_and_never_raises[bad4] PASSED [ 64%]
+tests/test_w1f_non_cron_wake.py::test_empty_interactive_sessions_is_not_an_effective_rule PASSED [ 71%]
+tests/test_w1f_non_cron_wake.py::test_interactive_admission_cannot_bypass_the_exclude_deny_list PASSED [ 78%]
+tests/test_w1f_non_cron_wake.py::test_subagent_completion_is_already_in_scope_and_settles PASSED [ 85%]
+tests/test_w1f_non_cron_wake.py::test_cron_completion_still_emits_unchanged PASSED [ 92%]
+tests/test_w1f_non_cron_wake.py::test_hook_dispatch_reaches_plugin_in_a_fresh_process PASSED [100%]
+
+============================= 14 passed in 1.70s ==============================

@@ -1,0 +1,13 @@
+============================= test session starts =============================
+collecting ... collected 8 items
+
+tests/test_w1r_ack_edges.py::test_1a_combined_envelope_plus_reply_is_an_ack_candidate PASSED [ 12%]
+tests/test_w1r_ack_edges.py::test_1b_combined_envelope_plus_reply_settles PASSED [ 25%]
+tests/test_w1r_ack_edges.py::test_1c_combined_reply_after_a_delivery_turn_settles PASSED [ 37%]
+tests/test_w1r_ack_edges.py::test_2a_quoted_instruction_then_reply_is_an_ack_candidate PASSED [ 50%]
+tests/test_w1r_ack_edges.py::test_2b_quoted_instruction_then_reply_settles PASSED [ 62%]
+tests/test_w1r_ack_edges.py::test_3_every_self_ack_variant_stays_false PASSED [ 75%]
+tests/test_w1r_ack_edges.py::test_3b_quoted_back_payload_never_settles_in_a_sweep PASSED [ 87%]
+tests/test_w1r_ack_edges.py::test_4_genuine_reply_only_still_settles PASSED [100%]
+
+============================== 8 passed in 2.08s ==============================

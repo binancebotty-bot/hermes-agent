@@ -1,0 +1,19 @@
+variant                                        expected  actual  why
+--------------------------------------------------------------------------------------------
+our two-line payload                           False     False   self-ACK
+our one-line payload                           False     False   self-ACK
+our line 2 alone                               False     False   self-ACK (instruction, not a reply)
+payload + SEP + payload                        False     False   self-ACK quoted back
+payload + SEP + line 2                         False     False   line 2 quoted back
+payload + SEP + nothing                        False     False   empty reply half
+line 2 + SEP + nothing                         False     False   empty reply half
+nonce + SEP + line 2                           False     False   self-ACK line 2
+payload + SEP + nonce echo                     False     False   reply half has no keyword
+payload + SEP + WAKE-ACK  [REPORTED]           True      True    combined render
+one-line + SEP + WAKE-ACK                      True      True    combined render
+quote(line 2) + SEP + WAKE-ACK                 True      True    quote then comply, no envelope marker
+quote(payload) + SEP + WAKE-ACK  [REPORTED]    True      True    quote then comply, envelope marker in quote
+WAKE-ACK alone                                 True      True    genuine reply
+SEP + WAKE-ACK                                 True      True    genuine reply
+
+mismatches: 0

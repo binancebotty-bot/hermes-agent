@@ -1,0 +1,69 @@
+W1s MUTATION CONTROL - merged tree, one revert at a time, FULL suite each time
+worktree: C:/Users/wigmore/oc-runs/w1s-shipping (merged tree before the evidence commit)
+green emitter sha256: 9a218eb1a2a7151b81f174158f27039436fab9d51f9bbe3643ff162407c31048 (re-asserted byte-exact after EVERY mutation)
+command: env -u PYTHONPATH HERMES_DISABLE_LAZY_INSTALLS=1 <venv>/python.exe -m pytest tests -q
+baseline: 212 passed, exit 0
+PRE-EXISTING = the test file exists at the merge base c46a371 (git ls-tree c46a371 tests/).
+NEW = added by this merge (tests/test_w1r_ack_edges.py, absent at c46a371).
+
+### M1 self-ACK rejection
+exit=1 | 6 failed, 206 passed in 48.01s
+  FAILED tests/test_binding.py::test_uncertain_sender_line_is_not_terminal_and_reconciles_as_pending   [PRE-EXISTING]
+  FAILED tests/test_pending_reconcile.py::test_b_pending_with_body_no_ack_becomes_delivered_unconfirmed   [PRE-EXISTING]
+  FAILED tests/test_w1e_capability_aware.py::test_d_untimed_ack_before_delivery_in_order_refuses   [PRE-EXISTING]
+  FAILED tests/test_w1j_ack_hardening.py::test_1a_real_two_line_envelope_is_not_an_ack_candidate   [PRE-EXISTING]
+  FAILED tests/test_w1j_ack_hardening.py::test_1b_real_two_line_envelope_never_settles   [PRE-EXISTING]
+  FAILED tests/test_w1r_ack_edges.py::test_3_every_self_ack_variant_stays_false   [NEW]
+
+### M2 expiry ordering
+exit=1 | 2 failed, 210 passed in 45.58s
+  FAILED tests/test_w1j_ack_hardening.py::test_2a_late_ack_beats_sweep_count_expiry   [PRE-EXISTING]
+  FAILED tests/test_w1j_ack_hardening.py::test_2b_late_ack_beats_elapsed_expiry   [PRE-EXISTING]
+
+### M3 journal pairing
+exit=1 | 1 failed, 211 passed in 52.00s
+  FAILED tests/test_w1j_ack_hardening.py::test_3a_record_rejects_invalid_pair_without_writing   [PRE-EXISTING]
+
+### M4 status reconciliation
+exit=1 | 1 failed, 211 passed in 55.34s
+  FAILED tests/test_w1j_ack_hardening.py::test_4_status_counts_reconcile_and_ack_label_is_newest_event   [PRE-EXISTING]
+
+### M5 clock guard
+exit=1 | 1 failed, 211 passed in 56.97s
+  FAILED tests/test_w1j_ack_hardening.py::test_5a_forward_clock_step_does_not_age   [PRE-EXISTING]
+
+### M5b clock guard (full revert)
+exit=1 | 2 failed, 210 passed in 45.20s
+  FAILED tests/test_w1j_ack_hardening.py::test_5a_forward_clock_step_does_not_age   [PRE-EXISTING]
+  FAILED tests/test_w1j_ack_hardening.py::test_5b_backward_clock_step_does_not_resurrect   [PRE-EXISTING]
+
+### M6 session admission
+exit=1 | 2 failed, 210 passed in 58.03s
+  FAILED tests/test_w1f_non_cron_wake.py::test_hook_dispatch_reaches_plugin_in_a_fresh_process   [PRE-EXISTING]
+  FAILED tests/test_w1f_non_cron_wake.py::test_listed_interactive_session_records_delivers_and_settles   [PRE-EXISTING]
+
+### M7 reply-half judging
+exit=1 | 5 failed, 207 passed in 64.48s (0:01:04)
+  FAILED tests/test_w1r_ack_edges.py::test_1a_combined_envelope_plus_reply_is_an_ack_candidate   [NEW]
+  FAILED tests/test_w1r_ack_edges.py::test_1b_combined_envelope_plus_reply_settles   [NEW]
+  FAILED tests/test_w1r_ack_edges.py::test_1c_combined_reply_after_a_delivery_turn_settles   [NEW]
+  FAILED tests/test_w1r_ack_edges.py::test_2a_quoted_instruction_then_reply_is_an_ack_candidate   [NEW]
+  FAILED tests/test_w1r_ack_edges.py::test_2b_quoted_instruction_then_reply_settles   [NEW]
+
+CLASSIFICATION VERDICT
+  M1 self-ACK rejection            reds=6  pre-existing=5  new=1
+  M2 expiry ordering               reds=2  pre-existing=2  new=0
+  M3 journal pairing               reds=1  pre-existing=1  new=0
+  M4 status reconciliation         reds=1  pre-existing=1  new=0
+  M5 clock guard                   reds=1  pre-existing=1  new=0
+  M5b clock guard (full revert)    reds=2  pre-existing=2  new=0
+  M6 session admission             reds=2  pre-existing=2  new=0
+  M7 reply-half judging            reds=5  pre-existing=0  new=5
+
+M1-M6 each turn at least one PRE-EXISTING test red, so no guard from the
+pre-merge tree is protected only by a test added by this merge.
+M7 (reply-half judging) is a NEW rule: nothing could protect it before it
+existed, so its reds are correctly all NEW tests - stated, not hidden.
+M5 as written (drift absorption removed, clamp kept) leaves
+test_5b green because `max(0.0, ...)` alone already absorbs a backward step;
+M5b (drift + clamp both reverted, the true pre-W1j body) turns 5a AND 5b red.
