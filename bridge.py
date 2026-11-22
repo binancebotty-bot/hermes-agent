@@ -229,6 +229,12 @@ def _coerce_int(value, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(coerced, maximum))
 
 
+# messages_read boundaries: an oversized limit is refused, not clamped, so a client learns its
+# request was out of bounds; `oldest` keeps the legacy chronological presentation available.
+_READ_ORDERS = ("newest", "oldest")
+_READ_MAX_LIMIT = 200
+
+
 def _extract_message_content(msg: dict) -> str:
     """Extract text content from a message, handling multi-part content."""
     content = msg.get("content", "")
@@ -474,20 +480,81 @@ class EventBridge:
                 self._last_poll_timestamps[session_key] = latest
 
 
+# --- Gateway health -----------------------------------------------------------
+
+
+_GATEWAY_HEALTH_URL = "http://127.0.0.1:8642/health"
+_GATEWAY_HEALTH_TIMEOUT_S = 5.0
+
+
+def _probe_gateway_health(url: str = _GATEWAY_HEALTH_URL, timeout: Optional[float] = None) -> dict:
+    """GET the gateway's ``/health`` and report its real status and latency; never raises.
+
+    A refused connection, a timeout, or a non-OK payload comes back as
+    ``{"status": "error", "error": ...}`` with the measured latency, so an MCP client gets a
+    truthful answer instead of an exception.
+    """
+    import urllib.request
+
+    timeout = _GATEWAY_HEALTH_TIMEOUT_S if timeout is None else timeout
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            http_status = response.status
+            body = response.read(4096).decode("utf-8", "replace")
+    except Exception as e:
+        return {"status": "error", "error": f"gateway unreachable: {e}",
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+    latency_ms = round((time.perf_counter() - started) * 1000, 1)
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = {}
+    if http_status != 200 or payload.get("status") != "ok":
+        return {"status": "error", "error": f"gateway health not ok (HTTP {http_status})",
+                "http_status": http_status, "latency_ms": latency_ms}
+    return {"status": "ok", "platform": payload.get("platform", ""),
+            "version": payload.get("version", ""), "http_status": http_status, "latency_ms": latency_ms}
+
+
 # --- MCP Server ---------------------------------------------------------------
 
 def _conversation_messages(session_key: str):
-    """(messages, error_json) for a conversation; exactly one is None."""
+    """(messages, error_json, session_id) for a conversation; exactly one of messages/error is None."""
     entry = _load_sessions_index().get(session_key)
     if not entry:
-        return None, json.dumps({"error": f"Conversation not found: {session_key}"})
+        return None, json.dumps({"error": f"Conversation not found: {session_key}"}), ""
     session_id = entry.get("session_id", "")
     if not session_id:
-        return None, json.dumps({"error": "No session ID for this conversation"})
+        return None, json.dumps({"error": "No session ID for this conversation"}), ""
     messages, error = _load_session_messages(session_id)
     if error:
-        return None, json.dumps({"error": error})
-    return messages, None
+        return None, json.dumps({"error": error}), session_id
+    return messages, None, session_id
+
+
+def _cursor_message_session(message_id: int):
+    """(session_id, error) for a message id looked up globally; read-only temp DB handle."""
+    # Resolve the releaser before acquiring a ref so no path can leak the SessionDB.
+    try:
+        from hermes_state_registry import release_or_close
+    except Exception:
+        logger.debug("SessionDB release unavailable", exc_info=True)
+        return None, "SessionDB release unavailable"
+    db = _get_session_db()
+    if db is None:
+        return None, None
+    try:
+        with db._read_ctx() as conn:
+            row = conn.execute("SELECT session_id FROM messages WHERE id=?", (message_id,)).fetchone()
+        return (row[0] if row and row[0] else None), None
+    except Exception as e:
+        return None, f"Failed to read cursor owner: {e}"
+    finally:
+        try:
+            release_or_close(db)
+        except Exception:
+            logger.debug("Failed to close MCP SessionDB", exc_info=True)
 
 
 def _platform_matches(wanted: Optional[str], actual: str) -> bool:
@@ -558,30 +625,100 @@ class _ToolHandlers:
             "total_tokens": entry.get("total_tokens", 0),
         }, indent=2)
 
-    def messages_read(self, session_key: str, limit: int = 50) -> str:
-        """Read recent messages from a conversation.
+    def messages_read(self, session_key: str, limit: int = 50, before_id: Optional[str] = None,
+                      after_id: Optional[str] = None, order: str = "newest") -> str:
+        """Read messages from a conversation, newest first by default.
 
-        Returns the message history in chronological order with role, content,
-        and timestamp for each message.
+        Returns up to ``limit`` messages with role, content, and timestamp. Page older
+        history by passing ``before_id`` from a previous page's ``next_cursor``, or page
+        newer history by passing ``after_id``. The cursor is a message id, so a page
+        boundary never shifts when a new message arrives mid-walk. Supplying both
+        ``before_id`` and ``after_id`` is an error (``cursor_conflict``).
+
+        Cursor pages are chronological (ascending); ``order`` applies to the no-cursor
+        read, where ``"newest"`` (default) returns the most recent messages newest-first
+        and ``"oldest"`` keeps the legacy chronological presentation.
 
         Args:
             session_key: The session key from conversations_list
-            limit: Maximum number of messages to return (default 50, most recent)
+            limit: Maximum number of messages to return (default 50, most recent; max 200)
+            before_id: Message id to page from; returns the immediately older page
+            after_id: Message id to page from; returns the first newer page
+            order: "newest" (default) or "oldest" (legacy chronological presentation)
         """
-        limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
-        all_messages, error = _conversation_messages(session_key)
+        if order not in _READ_ORDERS:
+            return json.dumps({"error": "invalid_order"})
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 50
+        if limit < 1:
+            return json.dumps({"error": "invalid_limit"})
+        if limit > _READ_MAX_LIMIT:
+            return json.dumps({"error": "limit_too_large"})
+        if before_id is not None and after_id is not None:
+            return json.dumps({"error": "cursor_conflict"})
+
+        direction = None
+        raw_cursor = None
+        if before_id is not None:
+            direction, raw_cursor = "before", before_id
+        elif after_id is not None:
+            direction, raw_cursor = "after", after_id
+        cursor_id: Optional[int] = None
+        if direction is not None:
+            try:
+                cursor_id = int(raw_cursor)
+            except (TypeError, ValueError):
+                cursor_id = 0
+            if not 0 < cursor_id <= 2**63 - 1:
+                return json.dumps({"error": "invalid_cursor"})
+
+        conversation = _conversation_messages(session_key)
+        all_messages, error = conversation[0], conversation[1]
+        session_id = conversation[2] if len(conversation) > 2 else None
         if error:
             return error
-        filtered = []
+        visible = []
         for msg in all_messages:
             role = msg.get("role", "")
             content = _extract_message_content(msg) if role in {"user", "assistant"} else ""
             if content:
-                filtered.append({"id": str(msg.get("id", "")), "role": role,
-                                 "content": content[:2000], "timestamp": msg.get("timestamp", "")})
-        messages = filtered[-limit:]
-        return json.dumps({"session_key": session_key, "count": len(messages),
-                           "total_in_session": len(filtered), "messages": messages}, indent=2)
+                visible.append((_coerce_int(msg.get("id"), default=0, minimum=0, maximum=10**18),
+                                {"id": str(msg.get("id", "")), "role": role,
+                                 "content": content[:2000], "timestamp": msg.get("timestamp", "")}))
+        visible.sort(key=lambda pair: pair[0])
+        total = len(visible)
+        next_cursor: Optional[str] = None
+        if direction is not None:
+            if session_id is None:  # legacy 2-tuple helper: resolve the id once here
+                session_id = _load_sessions_index().get(session_key, {}).get("session_id", "")
+            owner, owner_error = _cursor_message_session(cursor_id)
+            if owner_error:
+                return json.dumps({"error": "cursor_lookup_failed"})
+            if owner and session_id and owner != session_id:
+                return json.dumps({"error": "cursor_foreign_session"})
+            pos = next((i for i, pair in enumerate(visible) if pair[1]["id"] == str(cursor_id)), None)
+            if pos is None:
+                page = []
+            elif direction == "before":
+                older = visible[:pos]
+                page = older[-limit:]
+                if len(older) > len(page):
+                    next_cursor = str(page[0][0])
+            else:
+                newer = visible[pos + 1:]
+                page = newer[:limit]
+                if len(newer) > len(page):
+                    next_cursor = str(page[-1][0])
+        else:
+            page = visible[-limit:]
+            if len(visible) > len(page):
+                next_cursor = str(page[0][0])
+            if order == "newest":
+                page = page[::-1]
+        return json.dumps({"session_key": session_key, "count": len(page), "total_in_session": total,
+                           "next_cursor": next_cursor, "messages": [msg for _id, msg in page]}, indent=2)
 
     def attachments_fetch(self, session_key: str, message_id: str) -> str:
         """List non-text attachments for a message in a conversation.
@@ -593,7 +730,7 @@ class _ToolHandlers:
             session_key: The session key from conversations_list
             message_id: The message ID from messages_read
         """
-        all_messages, error = _conversation_messages(session_key)
+        all_messages, error = _conversation_messages(session_key)[:2]
         if error:
             return error
         target_msg = next((m for m in all_messages if str(m.get("id", "")) == message_id), None)
@@ -719,12 +856,20 @@ class _ToolHandlers:
             return json.dumps({"error": f"Invalid decision: {decision}. Must be allow-once, allow-always, or deny"})
         return json.dumps(self.bridge.respond_to_approval(id, decision), indent=2)
 
+    def hermes_health(self) -> str:
+        """Check the Hermes gateway's live health.
+
+        Returns the gateway's real status and response latency, or a truthful error
+        when it is unreachable. Never raises; the probe has a hard timeout.
+        """
+        return json.dumps(_probe_gateway_health(), indent=2)
+
 
 # Registration order == list_tools order (wire format).
 _TOOL_NAMES = (
     "conversations_list", "conversation_get", "messages_read", "attachments_fetch",
     "events_poll", "events_wait", "messages_send", "channels_list",
-    "permissions_list_open", "permissions_respond",
+    "permissions_list_open", "permissions_respond", "hermes_health",
 )
 
 
