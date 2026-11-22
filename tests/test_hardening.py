@@ -164,7 +164,8 @@ def test_h5_unwritable_plugins_destination_refuses_before_write(tmp_path):
 def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
     fx = build_home(tmp_path / phase)
     pre = sha(fx.config)
-    killed = run_env(fx, ["--apply"], WAKE_STOP_AFTER=phase)
+    # Crash injection is rehearsal-only; opt in explicitly now that the hook is gated.
+    killed = run_env(fx, ["--apply", "--rehearse"], WAKE_STOP_AFTER=phase)
     assert killed.returncode == 3, killed.stdout + killed.stderr
     assert f"SIMULATED DEATH after {phase}" in killed.stdout, killed.stdout
 
@@ -194,7 +195,8 @@ def test_interrupted_apply_recovery_at_each_step(tmp_path, phase):
 def test_toctou_drift_fails_closed(tmp_path, kind):
     fx = build_home(tmp_path)
     pre = sha(fx.config)
-    proc = run_env(fx, ["--apply"], WAKE_DRIFT=kind)
+    # Drift injection is rehearsal-only; opt in explicitly now that the hook is gated.
+    proc = run_env(fx, ["--apply", "--rehearse"], WAKE_DRIFT=kind)
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "drift" in proc.stdout.lower(), proc.stdout
     assert sha(fx.config) == pre, "live config not restored after drift refusal"

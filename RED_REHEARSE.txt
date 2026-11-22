@@ -1,0 +1,244 @@
+FFFFFFFFFF                                                               [100%]
+================================== FAILURES ===================================
+____________ test_wake_drift_env_without_rehearse_is_inert[source] ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_drift_env_without_re0')
+kind = 'source'
+
+    @pytest.mark.parametrize("kind", ["source", "config"])
+    def test_wake_drift_env_without_rehearse_is_inert(tmp_path, kind):
+        plain = build_home(tmp_path / "plain")
+        drift = build_home(tmp_path / "drift")
+        drift_emitter_before = (drift.src / "emitter.py").read_bytes()
+    
+        plain_proc = run_tool(plain, ["--apply"])
+        drift.env["WAKE_DRIFT"] = kind
+        drift_proc = run_tool(drift, ["--apply"])
+    
+        assert plain_proc.returncode == 0, plain_proc.stdout + plain_proc.stderr
+>       assert drift_proc.returncode == 0, drift_proc.stdout + drift_proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           pre-record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re0\drift\home\.hermes\state\wake_activation.json (state=pre; rollback recovers any later step)
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re0\drift\home\.hermes\config.yaml.wake-backup-20261122T093509Z
+E         REFUSED: source tree drifted between hash check and plugin copy; reverting
+E           rolling back an interrupted apply (record state=pre)
+E           config restored from C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re0\drift\home\.hermes\config.yaml.wake-backup-20261122T093509Z
+E         RESULT {"action": "rollback", "state": "rolled_back", "verified": true, "config_hash_matches": true, "plugin_dir_absent": true, "config_sha256": "94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e"}
+E         
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc..._dir_absent": true, "config_sha256": "94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e"}\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:53: AssertionError
+____________ test_wake_drift_env_without_rehearse_is_inert[config] ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_drift_env_without_re1')
+kind = 'config'
+
+    @pytest.mark.parametrize("kind", ["source", "config"])
+    def test_wake_drift_env_without_rehearse_is_inert(tmp_path, kind):
+        plain = build_home(tmp_path / "plain")
+        drift = build_home(tmp_path / "drift")
+        drift_emitter_before = (drift.src / "emitter.py").read_bytes()
+    
+        plain_proc = run_tool(plain, ["--apply"])
+        drift.env["WAKE_DRIFT"] = kind
+        drift_proc = run_tool(drift, ["--apply"])
+    
+        assert plain_proc.returncode == 0, plain_proc.stdout + plain_proc.stderr
+>       assert drift_proc.returncode == 0, drift_proc.stdout + drift_proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           pre-record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re1\drift\home\.hermes\state\wake_activation.json (state=pre; rollback recovers any later step)
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re1\drift\home\.hermes\config.yaml.wake-backup-20261122T093510Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re1\drift\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E         REFUSED: live config drifted between hash check and write; reverting
+E           rolling back an interrupted apply (record state=pre)
+E           config restored from C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re1\drift\home\.hermes\config.yaml.wake-backup-20261122T093510Z
+E           plugin moved aside: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_drift_env_without_re1\drift\home\.hermes\plugins\wake-emitter.rolledback-20261122T093510Z
+E         RESULT {"action": "rollback", "state": "rolled_back", "verified": true, "config_hash_matches": true, "plugin_dir_absent": true, "config_sha256": "94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e"}
+E         
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc..._dir_absent": true, "config_sha256": "94d120e768cd496676cb91b9f8cb347d743f73783ed7700775c871aaa4ab040e"}\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:53: AssertionError
+___ test_wake_stop_after_env_without_rehearse_does_not_abort[preconditions] ___
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_stop_after_env_witho0')
+phase = 'preconditions'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_wake_stop_after_env_without_rehearse_does_not_abort(tmp_path, phase):
+        fx = build_home(tmp_path)
+        fx.env["WAKE_STOP_AFTER"] = phase
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode == 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E         SIMULATED DEATH after preconditions
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...92c-83ed-9f47-f49ab937c2f1 gen 1\n  pane reachable: MATCHED_BY_CONV\nSIMULATED DEATH after preconditions\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:71: AssertionError
+______ test_wake_stop_after_env_without_rehearse_does_not_abort[backup] _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_stop_after_env_witho1')
+phase = 'backup'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_wake_stop_after_env_without_rehearse_does_not_abort(tmp_path, phase):
+        fx = build_home(tmp_path)
+        fx.env["WAKE_STOP_AFTER"] = phase
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode == 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           pre-record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho1\home\.hermes\state\wake_activation.json (state=pre; rollback recovers any later step)
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho1\home\.hermes\config.yaml.wake-backup-20261122T093511Z
+E         SIMULATED DEATH after backup
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc..._after_env_witho1\\home\\.hermes\\config.yaml.wake-backup-20261122T093511Z\nSIMULATED DEATH after backup\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:71: AssertionError
+______ test_wake_stop_after_env_without_rehearse_does_not_abort[plugin] _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_stop_after_env_witho2')
+phase = 'plugin'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_wake_stop_after_env_without_rehearse_does_not_abort(tmp_path, phase):
+        fx = build_home(tmp_path)
+        fx.env["WAKE_STOP_AFTER"] = phase
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode == 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           pre-record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho2\home\.hermes\state\wake_activation.json (state=pre; rollback recovers any later step)
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho2\home\.hermes\config.yaml.wake-backup-20261122T093511Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho2\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E         SIMULATED DEATH after plugin
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...itho2\\home\\.hermes\\plugins\\wake-emitter (3 files, hashes match source)\nSIMULATED DEATH after plugin\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:71: AssertionError
+______ test_wake_stop_after_env_without_rehearse_does_not_abort[config] _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_stop_after_env_witho3')
+phase = 'config'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_wake_stop_after_env_without_rehearse_does_not_abort(tmp_path, phase):
+        fx = build_home(tmp_path)
+        fx.env["WAKE_STOP_AFTER"] = phase
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode == 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           pre-record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho3\home\.hermes\state\wake_activation.json (state=pre; rollback recovers any later step)
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho3\home\.hermes\config.yaml.wake-backup-20261122T093512Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho3\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E         SIMULATED DEATH after config
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...atch source)\n  config enabled; readback flag_state=ON (ruamel round-trip)\nSIMULATED DEATH after config\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:71: AssertionError
+______ test_wake_stop_after_env_without_rehearse_does_not_abort[record] _______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_wake_stop_after_env_witho4')
+phase = 'record'
+
+    @pytest.mark.parametrize("phase", STOP_PHASES)
+    def test_wake_stop_after_env_without_rehearse_does_not_abort(tmp_path, phase):
+        fx = build_home(tmp_path)
+        fx.env["WAKE_STOP_AFTER"] = phase
+        proc = run_tool(fx, ["--apply"])
+>       assert proc.returncode == 0, proc.stdout + proc.stderr
+E       AssertionError:   lane gpt6:assistant: conv https://chatgpt.com/c/6b01a297-292c-83ed-9f47-f49ab937c2f1 gen 1
+E           pane reachable: MATCHED_BY_CONV
+E           pre-record: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho4\home\.hermes\state\wake_activation.json (state=pre; rollback recovers any later step)
+E           backup: C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho4\home\.hermes\config.yaml.wake-backup-20261122T093512Z
+E           installed C:\Users\wigmore\AppData\Local\Temp\pytest-of-wigmore\pytest-9768\test_wake_stop_after_env_witho4\home\.hermes\plugins\wake-emitter (3 files, hashes match source)
+E           config enabled; readback flag_state=ON (ruamel round-trip)
+E           post-install verification: loadable (gate=load, lane=gpt6:assistant, paths_absolute=True)
+E         SIMULATED DEATH after record
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...rification: loadable (gate=load, lane=gpt6:assistant, paths_absolute=True)\nSIMULATED DEATH after record\n', stderr='').returncode
+
+tests\test_rehearse_gate.py:71: AssertionError
+_________ test_rehearse_against_real_home_refuses_and_mutates_nothing _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_rehearse_against_real_hom0')
+
+    def test_rehearse_against_real_home_refuses_and_mutates_nothing(tmp_path):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        # Redirect every write target to the fake home while naming the real home
+        # as --home: even a broken gate could not touch a live file.
+        fx.env["WAKE_HERMES_HOME"] = str(fx.hermes)
+        home = real_home()
+        assert home.is_dir()
+    
+        proc = run_env(fx, ["--apply", "--rehearse", "--home", str(home)])
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+>       assert "REHEARSE_REAL_HOME" in proc.stdout, proc.stdout
+E       AssertionError: 
+E       assert 'REHEARSE_REAL_HOME' in ''
+E        +  where '' = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...                   [--rollback] [--status] [--dry-run]\nwake_activate.py: error: unrecognized arguments: --rehearse\n').stdout
+
+tests\test_rehearse_gate.py:89: AssertionError
+___________ test_rehearse_in_fake_home_still_injects_drift[source] ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_rehearse_in_fake_home_sti0')
+kind = 'source'
+
+    @pytest.mark.parametrize("kind", ["source", "config"])
+    def test_rehearse_in_fake_home_still_injects_drift(tmp_path, kind):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        proc = run_env(fx, ["--apply", "--rehearse"], WAKE_DRIFT=kind)
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+>       assert "drift" in proc.stdout.lower(), proc.stdout
+E       AssertionError: 
+E       assert 'drift' in ''
+E        +  where '' = <built-in method lower of str object at 0x00007FFBA13396E0>()
+E        +    where <built-in method lower of str object at 0x00007FFBA13396E0> = ''.lower
+E        +      where '' = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...                   [--rollback] [--status] [--dry-run]\nwake_activate.py: error: unrecognized arguments: --rehearse\n').stdout
+
+tests\test_rehearse_gate.py:104: AssertionError
+___________ test_rehearse_in_fake_home_still_injects_drift[config] ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9768/test_rehearse_in_fake_home_sti1')
+kind = 'config'
+
+    @pytest.mark.parametrize("kind", ["source", "config"])
+    def test_rehearse_in_fake_home_still_injects_drift(tmp_path, kind):
+        fx = build_home(tmp_path)
+        pre = sha(fx.config)
+        proc = run_env(fx, ["--apply", "--rehearse"], WAKE_DRIFT=kind)
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+>       assert "drift" in proc.stdout.lower(), proc.stdout
+E       AssertionError: 
+E       assert 'drift' in ''
+E        +  where '' = <built-in method lower of str object at 0x00007FFBA13396E0>()
+E        +    where <built-in method lower of str object at 0x00007FFBA13396E0> = ''.lower
+E        +      where '' = CompletedProcess(args=['C:\\Users\\wigmore\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe', 'C:\\Users\\wigmore\\oc...                   [--rollback] [--status] [--dry-run]\nwake_activate.py: error: unrecognized arguments: --rehearse\n').stdout
+
+tests\test_rehearse_gate.py:104: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_rehearse_gate.py::test_wake_drift_env_without_rehearse_is_inert[source]
+FAILED tests/test_rehearse_gate.py::test_wake_drift_env_without_rehearse_is_inert[config]
+FAILED tests/test_rehearse_gate.py::test_wake_stop_after_env_without_rehearse_does_not_abort[preconditions]
+FAILED tests/test_rehearse_gate.py::test_wake_stop_after_env_without_rehearse_does_not_abort[backup]
+FAILED tests/test_rehearse_gate.py::test_wake_stop_after_env_without_rehearse_does_not_abort[plugin]
+FAILED tests/test_rehearse_gate.py::test_wake_stop_after_env_without_rehearse_does_not_abort[config]
+FAILED tests/test_rehearse_gate.py::test_wake_stop_after_env_without_rehearse_does_not_abort[record]
+FAILED tests/test_rehearse_gate.py::test_rehearse_against_real_home_refuses_and_mutates_nothing
+FAILED tests/test_rehearse_gate.py::test_rehearse_in_fake_home_still_injects_drift[source]
+FAILED tests/test_rehearse_gate.py::test_rehearse_in_fake_home_still_injects_drift[config]
+10 failed in 6.03s

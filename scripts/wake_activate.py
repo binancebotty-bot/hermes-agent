@@ -15,6 +15,11 @@ Usage:
     python wake_activate.py --status        # JSON status only
     python wake_activate.py --apply         # preconditions -> pin -> install -> enable
     python wake_activate.py --rollback      # restore config, move plugin aside, verify
+    python wake_activate.py --apply --rehearse   # ONLY for a disposable fake home
+
+Rehearsal hooks (crash injection, drift injection) are inert unless --rehearse is
+passed; an environment variable alone can never mutate anything. --rehearse is
+refused against the real user home.
 
 Exit codes: 0 success, 2 refused (no write), 1 rollback could not verify.
 """
@@ -432,15 +437,19 @@ def write_record(path, record):
 
 # -- commands ---------------------------------------------------------------
 
-def _stop_after(phase):
+def _stop_after(phase, rehearse=False):
     """Rehearsal-only crash injection: simulate a death just after a phase."""
+    if not rehearse:
+        return
     if os.environ.get("WAKE_STOP_AFTER") == phase:
         print(f"SIMULATED DEATH after {phase}")
         raise SystemExit(3)
 
 
-def _inject_drift(kind, paths):
+def _inject_drift(kind, paths, rehearse=False):
     """Rehearsal-only external writer: mutate a file between check and write."""
+    if not rehearse:
+        return
     if os.environ.get("WAKE_DRIFT") != kind:
         return
     if kind == "source":
@@ -451,7 +460,7 @@ def _inject_drift(kind, paths):
             handle.write("\n# external config drift during apply\n")
 
 
-def apply(paths, expected_sha=None, expected_config_sha=None):
+def apply(paths, expected_sha=None, expected_config_sha=None, rehearse=False):
     expected_sha = expected_sha or os.environ.get("WAKE_EXPECTED_SHA")
     expected_config_sha = expected_config_sha or os.environ.get("WAKE_EXPECTED_CONFIG_SHA")
     errors = preconditions(paths)
@@ -459,7 +468,7 @@ def apply(paths, expected_sha=None, expected_config_sha=None):
         for error in errors:
             print(f"REFUSED: {error}")
         return 2
-    _stop_after("preconditions")
+    _stop_after("preconditions", rehearse)
 
     config_before = sha256(paths.config)
     if not expected_config_sha:
@@ -521,10 +530,10 @@ def apply(paths, expected_sha=None, expected_config_sha=None):
         rollback(paths)
         return 2
     print(f"  backup: {backup}")
-    _stop_after("backup")
+    _stop_after("backup", rehearse)
 
     # Re-hash the source immediately before the copy: refuse on TOCTOU drift.
-    _inject_drift("source", paths)
+    _inject_drift("source", paths, rehearse)
     if tree_hashes(paths.source) != source_hashes:
         print("REFUSED: source tree drifted between hash check and plugin copy; reverting")
         rollback(paths)
@@ -544,10 +553,10 @@ def apply(paths, expected_sha=None, expected_config_sha=None):
         print("REFUSED: installed file hashes do not match the source; copy reverted")
         return 2
     print(f"  installed {paths.dst} ({len(installed)} files, hashes match source)")
-    _stop_after("plugin")
+    _stop_after("plugin", rehearse)
 
     # Re-hash the live config immediately before the write: refuse on TOCTOU drift.
-    _inject_drift("config", paths)
+    _inject_drift("config", paths, rehearse)
     if sha256(paths.config) != config_before:
         print("REFUSED: live config drifted between hash check and write; reverting")
         rollback(paths)
@@ -562,7 +571,7 @@ def apply(paths, expected_sha=None, expected_config_sha=None):
         rollback(paths)
         return 2
     print(f"  config enabled; readback flag_state=ON ({YAML_LIB} round-trip)")
-    _stop_after("config")
+    _stop_after("config", rehearse)
 
     # No inert-but-green install: discovery must see a loadable manifest and the
     # plugin's own config path must report the intended state.
@@ -580,7 +589,7 @@ def apply(paths, expected_sha=None, expected_config_sha=None):
     record["installed_hashes"] = installed
     record["post_install_verification"] = verification
     write_record(paths.record, record)  # flip PRE -> COMPLETE
-    _stop_after("record")
+    _stop_after("record", rehearse)
     print(f"  record: {paths.record}")
     print(f"  pinned sha {head}")
     print("RESULT " + json.dumps({"action": "apply", "state": "applied",
@@ -686,6 +695,19 @@ def status(paths):
 
 # -- paths ------------------------------------------------------------------
 
+def _real_user_home():
+    """Operator home, ignoring the HOME/USERPROFILE redirect a rehearsal sets.
+
+    HOMEDRIVE/HOMEPATH are not touched by the fake-HOME harness, so they name
+    the real user home even when the rehearsal env points elsewhere.
+    """
+    drive = os.environ.get("HOMEDRIVE")
+    path_part = os.environ.get("HOMEPATH")
+    if drive and path_part:
+        return Path(drive + path_part)
+    return Path.home()
+
+
 def build_paths(home=None, source=None, repo=None, lane=None):
     # ``home`` is the user home (Path.home() by default); the Hermes tree is
     # always ``<home>/.hermes`` so the fake-HOME rehearsal matches production.
@@ -721,9 +743,19 @@ def main(argv=None):
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--dry-run", action="store_true", default=True)
+    parser.add_argument("--rehearse", action="store_true",
+                        help="enable crash/drift injection; disposable fake homes only")
     args = parser.parse_args(argv)
 
     paths = build_paths(args.home, args.source, args.repo, args.lane)
+
+    # Refuse before ANY command (including status/rollback) touches a real home.
+    if args.rehearse:
+        real_home = _real_user_home()
+        if Path(paths.home).resolve() == real_home.resolve():
+            print(f"REFUSED: REHEARSE_REAL_HOME --rehearse targets the real home "
+                  f"{real_home}; use a disposable fake home")
+            return 2
 
     if args.rollback:
         return rollback(paths)
@@ -731,7 +763,7 @@ def main(argv=None):
         print(json.dumps(status(paths), indent=1, sort_keys=True))
         return 0
     if args.apply:
-        return apply(paths, args.expected_sha, args.expected_config_sha)
+        return apply(paths, args.expected_sha, args.expected_config_sha, args.rehearse)
 
     print("PLAN (dry run; no writes)")
     print(f"  home       {paths.home}")
