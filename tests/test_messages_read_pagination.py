@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,6 +65,23 @@ def _ids(response):
 
 
 ALL_VISIBLE = ["130", "113", "109", "104", "101"]
+
+# A walk that ignores its cursor would otherwise loop forever and hang the suite. Fail fast instead.
+MAX_WALK_PAGES = 50
+
+
+def _walk(handler, page_request, cursor=None):
+    """Collect message ids across cursor pages; trip the cap if the cursor stops advancing."""
+    collected, pages = [], 0
+    while True:
+        pages += 1
+        assert pages <= MAX_WALK_PAGES, (
+            f"walk exceeded {MAX_WALK_PAGES} pages - cursor is probably being ignored")
+        page = json.loads(handler.messages_read("demo", **page_request(cursor)))
+        collected += [m["id"] for m in page["messages"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return collected
 
 
 # --- Live-plugin specification (16 tests; names exact, none renamed) ---------
@@ -116,7 +134,7 @@ def test_last_message_after_boundary_returns_empty(subject):
     assert _ids(handler.messages_read("demo", after_id="130")) == []
 
 
-@pytest.mark.parametrize("cursor", ["bad", "0", "-3", str(2**64)])
+@pytest.mark.parametrize("cursor", ["bad", "0", "-3", str(2**63), str(2**64)])
 def test_invalid_cursor_is_named_error(subject, cursor):
     _bridge, handler, _rows = subject
     assert json.loads(handler.messages_read("demo", after_id=cursor))["error"] == "invalid_cursor"
@@ -182,6 +200,16 @@ def test_oversized_limit_is_refused(subject, bad_limit):
     assert "messages" not in obj
 
 
+def test_oversized_limit_error_states_the_documented_maximum(subject):
+    """The error carries the bound, and that bound matches the tool's schema description."""
+    _bridge, handler, _rows = subject
+    obj = json.loads(handler.messages_read("demo", limit=_bridge._READ_MAX_LIMIT + 1))
+    assert obj["error"] == "limit_too_large"
+    assert obj["max"] == _bridge._READ_MAX_LIMIT
+    described = int(re.search(r"max (\d+)", handler.messages_read.__doc__).group(1))
+    assert obj["max"] == described
+
+
 @pytest.mark.parametrize("bad_limit", [0, -1, -99])
 def test_non_positive_limit_is_refused(subject, bad_limit):
     _bridge, handler, _rows = subject
@@ -231,16 +259,7 @@ def test_cursor_pages_include_only_user_and_assistant(subject):
 
 def test_cursor_paging_walks_all_history_without_duplicates_or_gaps(subject):
     _bridge, handler, _rows = subject
-    collected, cursor = [], None
-    while True:
-        kwargs = {"limit": 2}
-        if cursor is not None:
-            kwargs["before_id"] = cursor
-        page = json.loads(handler.messages_read("demo", **kwargs))
-        collected += [m["id"] for m in page["messages"]]
-        cursor = page["next_cursor"]
-        if cursor is None:
-            break
+    collected = _walk(handler, lambda cursor: {"limit": 2, **({"before_id": cursor} if cursor else {})})
     assert sorted(collected, key=int) == sorted(ALL_VISIBLE, key=int)
     assert len(collected) == len(set(collected)) == 5
 
@@ -253,22 +272,15 @@ def test_page_boundary_is_stable_when_a_new_message_arrives_mid_walk(subject):
     rows.append({"id": 200, "role": "assistant", "content": "newer", "timestamp": 7})
 
     collected = [m["id"] for m in page1["messages"]]
-    cursor = page1["next_cursor"]
-    while cursor is not None:
-        page = json.loads(handler.messages_read("demo", limit=2, before_id=cursor))
-        collected += [m["id"] for m in page["messages"]]
-        cursor = page["next_cursor"]
+    collected += _walk(handler, lambda cursor: {"limit": 2, "before_id": cursor},
+                       cursor=page1["next_cursor"])
     assert sorted(collected, key=int) == sorted(ALL_VISIBLE, key=int)
     assert "200" not in collected  # the new id 200 never leaks into an older page
 
 
 def test_after_id_paging_walks_forward_without_duplicates_or_gaps(subject):
     _bridge, handler, _rows = subject
-    collected, cursor = [], "101"
-    while cursor is not None:
-        page = json.loads(handler.messages_read("demo", limit=2, after_id=cursor))
-        collected += [m["id"] for m in page["messages"]]
-        cursor = page["next_cursor"]
+    collected = _walk(handler, lambda cursor: {"limit": 2, "after_id": cursor or "101"})
     assert collected == ["104", "109", "113", "130"]
     assert len(collected) == len(set(collected)) == 4
 
@@ -277,6 +289,33 @@ def test_after_id_next_cursor_is_the_newest_id_of_the_page(subject):
     _bridge, handler, _rows = subject
     page = json.loads(handler.messages_read("demo", limit=2, after_id="101"))
     assert page["next_cursor"] == "109"
+
+
+def test_large_but_valid_id_is_not_coerced_and_walks(subject):
+    """A SQLite AUTOINCREMENT id can exceed 1e18; the cursor bound is 2**63-1, not 1e18."""
+    _bridge, handler, rows = subject
+    big = 9_000_000_000_000_000_000  # > 1e18, < 2**63-1
+    rows.append({"id": big, "role": "user", "content": "big", "timestamp": 7})
+    page = json.loads(handler.messages_read("demo", limit=1))
+    assert page["next_cursor"] == str(big)  # exact id, never clamped
+    collected = [m["id"] for m in page["messages"]]
+    collected += _walk(handler, lambda cursor: {"limit": 2, "before_id": cursor},
+                       cursor=page["next_cursor"])
+    assert collected[0] == str(big)
+    assert len(collected) == len(set(collected)) == 6
+
+
+def test_walk_page_cap_fails_fast_on_a_cursor_ignoring_handler(subject):
+    """Negative control: a handler that ignores the cursor trips the page cap instead of hanging."""
+    _bridge, handler, _rows = subject
+
+    def ignoring_cursor(session_key, **kwargs):
+        return json.dumps({"session_key": session_key, "count": 1, "total_in_session": 5,
+                           "next_cursor": "130", "messages": [{"id": "130"}]})
+
+    handler.messages_read = ignoring_cursor
+    with pytest.raises(AssertionError, match="walk exceeded 50 pages"):
+        _walk(handler, lambda cursor: {"limit": 2, "before_id": cursor} if cursor else {"limit": 2})
 
 
 def test_foreign_session_after_cursor_is_named_error(subject):

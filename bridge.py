@@ -233,6 +233,9 @@ def _coerce_int(value, *, default: int, minimum: int, maximum: int) -> int:
 # request was out of bounds; `oldest` keeps the legacy chronological presentation available.
 _READ_ORDERS = ("newest", "oldest")
 _READ_MAX_LIMIT = 200
+# One cursor bound for the validator and the id coercion: message ids are int64, so 2**63-1 is
+# the maximum everywhere. A coerced next_cursor must stay a real id, not a clamped sentinel.
+_CURSOR_MAX_ID = 2**63 - 1
 
 
 def _extract_message_content(msg: dict) -> str:
@@ -655,7 +658,7 @@ class _ToolHandlers:
         if limit < 1:
             return json.dumps({"error": "invalid_limit"})
         if limit > _READ_MAX_LIMIT:
-            return json.dumps({"error": "limit_too_large"})
+            return json.dumps({"error": "limit_too_large", "max": _READ_MAX_LIMIT})
         if before_id is not None and after_id is not None:
             return json.dumps({"error": "cursor_conflict"})
 
@@ -671,7 +674,7 @@ class _ToolHandlers:
                 cursor_id = int(raw_cursor)
             except (TypeError, ValueError):
                 cursor_id = 0
-            if not 0 < cursor_id <= 2**63 - 1:
+            if not 0 < cursor_id <= _CURSOR_MAX_ID:
                 return json.dumps({"error": "invalid_cursor"})
 
         conversation = _conversation_messages(session_key)
@@ -684,7 +687,7 @@ class _ToolHandlers:
             role = msg.get("role", "")
             content = _extract_message_content(msg) if role in {"user", "assistant"} else ""
             if content:
-                visible.append((_coerce_int(msg.get("id"), default=0, minimum=0, maximum=10**18),
+                visible.append((_coerce_int(msg.get("id"), default=0, minimum=0, maximum=_CURSOR_MAX_ID),
                                 {"id": str(msg.get("id", "")), "role": role,
                                  "content": content[:2000], "timestamp": msg.get("timestamp", "")}))
         visible.sort(key=lambda pair: pair[0])
@@ -752,7 +755,7 @@ class _ToolHandlers:
             session_key: Optional filter to one conversation
             limit: Maximum events to return (default 20)
         """
-        after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
+        after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=_CURSOR_MAX_ID)
         limit = _coerce_int(limit, default=20, minimum=1, maximum=200)
         result = self.bridge.poll_events(after_cursor=after_cursor, session_key=session_key, limit=limit)
         return json.dumps(result, indent=2)
@@ -768,7 +771,7 @@ class _ToolHandlers:
             session_key: Optional filter to one conversation
             timeout_ms: Maximum wait time in milliseconds (default 30000)
         """
-        after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
+        after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=_CURSOR_MAX_ID)
         timeout_ms = _coerce_int(timeout_ms, default=30000, minimum=0, maximum=300000)  # cap 5 min
         event = self.bridge.wait_for_event(after_cursor=after_cursor, session_key=session_key, timeout_ms=timeout_ms)
         return json.dumps({"event": event} if event else {"event": None, "reason": "timeout"}, indent=2)

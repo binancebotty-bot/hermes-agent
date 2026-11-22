@@ -31,7 +31,7 @@ hermes plugins install NousResearch/hermes-official-plugins#mcp-serve
 
 Use `["-p", "<profile>", "mcp-serve"]` to serve another profile's conversations; the plugin must be installed in that profile too (`hermes -p <profile> plugins install mcp-serve`).
 
-**Coming from `hermes mcp serve`?** Change the client's `args` from `["mcp", "serve"]` to `["mcp-serve"]`. The ten tool names, their parameters and descriptions are unchanged. On a Hermes without the old command, `hermes mcp serve` prints this new spelling and the install line.
+**Coming from `hermes mcp serve`?** Change the client's `args` from `["mcp", "serve"]` to `["mcp-serve"]`. The eleven tool names, their parameters and descriptions are unchanged apart from the addition of `hermes_health`, which reports the Hermes gateway's live status and response latency (or a truthful error). On a Hermes without the old command, `hermes mcp serve` prints this new spelling and the install line.
 
 ## Tools
 
@@ -45,6 +45,7 @@ Use `["-p", "<profile>", "mcp-serve"]` to serve another profile's conversations;
 | `messages_send` | Send to `platform:chat_id` (or a channel name), through Hermes' own send path |
 | `channels_list` | Targets you can send to |
 | `permissions_list_open` / `permissions_respond` | Approval requests seen during this session |
+| `hermes_health` | Live gateway health: status and response latency, or a truthful error |
 
 Messages come from the profile's `state.db`. Events start when the server starts; older history is read with `messages_read`. Reading needs no running gateway; `messages_send` does, since the platform connections live there.
 
