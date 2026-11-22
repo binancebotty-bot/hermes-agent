@@ -196,3 +196,62 @@ def test_skipped_turn_does_not_touch_an_existing_journal(tmp_path, monkeypatch):
     assert journal.read_text(encoding="utf-8") == before, \
         "a skipped turn is invisible: no event, no outcome, no ack reconciliation"
     assert calls == []
+
+
+def test_scope_excluded_task_id_prefix_is_skipped_with_no_journal_or_send(tmp_path, monkeypatch):
+    """(a) A matching exclude prefix is an additional deny: no event, no send."""
+    emitter = _load()
+    scope = {"require_task_id": True, "task_id_exclude_prefixes": ["cron:AAA"]}
+    worker, journal = _worker(tmp_path, emitter, scope)
+    calls = _sends(monkeypatch, emitter)
+    assert worker.on_session_end(**_payload(task_id="cron:AAA:xyz")) == SKIPPED
+    assert _rows(journal) == []
+    assert calls == []
+
+
+def test_scope_excluded_prefix_does_not_block_other_task_ids(tmp_path, monkeypatch):
+    """(b) A different task_id still emits and delivers normally."""
+    emitter = _load()
+    scope = {"require_task_id": True, "task_id_exclude_prefixes": ["cron:AAA"]}
+    worker, journal = _worker(tmp_path, emitter, scope)
+    calls = _sends(monkeypatch, emitter)
+    assert worker.on_session_end(**_payload(task_id="cron:BBB:xyz")) == "DELIVERED_UNACKED"
+    assert [row["kind"] for row in _rows(journal)] == ["event", "attempt", "outcome"]
+    assert len(calls) == 1
+
+
+def test_scope_exclude_prefix_matching_is_anchored_at_start(tmp_path, monkeypatch):
+    """(c) A prefix appearing mid-task_id is not an exclusion."""
+    emitter = _load()
+    scope = {"require_task_id": True, "task_id_exclude_prefixes": ["cron:AAA"]}
+    worker, journal = _worker(tmp_path, emitter, scope)
+    calls = _sends(monkeypatch, emitter)
+    assert worker.on_session_end(**_payload(task_id="xxxcron:AAA")) == "DELIVERED_UNACKED"
+    assert [row["kind"] for row in _rows(journal)] == ["event", "attempt", "outcome"]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("exclude", [
+    "cron:AAA",              # a bare string, not a list
+    ["cron:AAA", 7],         # non-string entry
+    ["cron:AAA", None],      # non-string entry
+])
+def test_scope_malformed_exclude_value_is_deny_safe(tmp_path, monkeypatch, exclude):
+    """(d) Malformed exclude values deny the turn and never raise."""
+    emitter = _load()
+    scope = {"require_task_id": True, "task_id_exclude_prefixes": exclude}
+    worker, journal = _worker(tmp_path, emitter, scope)
+    calls = _sends(monkeypatch, emitter)
+    assert worker.on_session_end(**_payload(task_id="cron:BBB:xyz")) == SKIPPED
+    assert _rows(journal) == []
+    assert calls == []
+
+
+def test_scope_absent_exclude_key_changes_nothing(tmp_path, monkeypatch):
+    """(e) Without the key, a cron task_id still wakes exactly as today."""
+    emitter = _load()
+    worker, journal = _worker(tmp_path, emitter, {"require_task_id": True})
+    calls = _sends(monkeypatch, emitter)
+    assert worker.on_session_end(**_payload(task_id="cron:AAA:xyz")) == "DELIVERED_UNACKED"
+    assert [row["kind"] for row in _rows(journal)] == ["event", "attempt", "outcome"]
+    assert len(calls) == 1

@@ -387,11 +387,19 @@ class WakeEmitter:
             need_task = scope.get("require_task_id", False)
             if not isinstance(session_ids, list) or not isinstance(need_task, bool):
                 return False
+            # Additional deny only: a malformed exclude list rejects the turn,
+            # an empty or absent one is a no-op that cannot widen the allowlist.
+            excluded = scope.get("task_id_exclude_prefixes", [])
+            if not isinstance(excluded, list) or any(not isinstance(p, str) for p in excluded):
+                return False
             if not session_ids and not need_task:
                 return False
             if session_ids and payload.get("session_id") not in session_ids:
                 return False
-            if need_task and not payload.get("task_id"):
+            task_id = payload.get("task_id")
+            if need_task and not task_id:
+                return False
+            if isinstance(task_id, str) and any(task_id.startswith(p) for p in excluded):
                 return False
             return True
         except BaseException:
