@@ -231,3 +231,51 @@ both the no-flag skip and the preserved bounded wider read for a capable tool.
 test file) — `RED_W1E_CORRECTED.txt`; GREEN `PYTEST_EXIT=0` (5 passed) —
 `GREEN_W1E.txt`; full suite `PYTEST_EXIT=0` (149 passed = 144 existing + 5 new) —
 `GREEN_FULL_W1E.txt`.
+
+## W1f — why only cron ever woke the lane, and the one admission that fixes it
+
+Measured: every row in the live journal is `cron:` (plus two hand-made fixtures).
+Two independent causes, neither in the ACK logic:
+
+1. **Registration is per process, once.** `hermes_cli.plugins._delivery_manager`
+   (`hermes_cli/plugins.py:990-999`) only scans when `_discovered` is false, and
+   `PluginManager.discover_and_load` returns early once its flag is set
+   (`hermes_cli/plugins.py:408`). There is no re-scan for a long-lived process.
+   The only production fire site for `on_session_end` is
+   `agent/turn_finalizer.py:911-922`. A chat, gateway or `serve` process that
+   booted *before* the plugin was installed therefore dispatches every turn into
+   an empty registry — and delegated subagents are constructed in that same
+   process (`tools/delegate_tool.py:303`), so they inherit the empty registry
+   too. Cron is a new process per run, so it was the only surface that loaded
+   the plugin. This half is operational: the plugin must be installed and the
+   surface restarted (or the surface must start after install).
+2. **The scope allowlist can never match a real chat turn.** A genuine
+   interactive turn carries the task id the runtime minted for it
+   (`agent/turn_context.py:643`: `task_id or str(uuid.uuid4())`), and
+   `_in_scope` admitted only `task_id_prefix_allow` prefixes. A uuid matches no
+   prefix, so the turn was `SKIPPED_OUT_OF_SCOPE` before a single journal row —
+   `require_task_id: false` does not help, because the id is present, just
+   unrecognisable.
+
+The admission is one explicit, session-scoped key:
+
+```yaml
+scope:
+  require_task_id: true
+  task_id_prefix_allow: ["cron:", "subagent-"]
+  task_id_exclude_prefixes: ["cron:8cff233194f6", "local-"]
+  interactive_sessions: ["<the chat session id that may wake the lane>"]
+```
+
+A completed turn whose `session_id` is listed is in scope whatever shape its
+minted task id has. Absent, empty or malformed it widens nothing (default deny
+stands), and `task_id_exclude_prefixes` still wins.
+
+Delegated subagents need no scope change: `tools/delegate_tool_child_run.py:885`
+mints `subagent-<n>-<hex>` and passes it as `task_id` (`:1019`), which the
+existing allowlist already admits — they were silent only because of cause 1.
+
+**Evidence:** RED `PYTEST_EXIT=1` (2 failed: interactive admission + fresh-process
+dispatch) — `RED_W1F.txt`; GREEN `PYTEST_EXIT=0` (14 passed) — `GREEN_W1F.txt`;
+full suite `PYTEST_EXIT=0` (171 passed = 157 existing + 14 new) —
+`GREEN_FULL_W1F.txt`.

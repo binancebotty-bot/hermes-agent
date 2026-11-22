@@ -674,7 +674,10 @@ class WakeEmitter:
         scope with no effective rule allows nothing. ``task_id_prefix_allow`` is
         an additional gate: when present and non-empty, only those task_id
         prefixes are in scope, so minted/uuid, interactive, gateway and induced
-        turns are skipped instead of waking the lane.
+        turns are skipped instead of waking the lane. ``interactive_sessions`` is
+        the one explicit way to admit a genuine chat turn: the runtime mints a
+        per-turn uuid task id for it (agent/turn_context.py:643), so no prefix can
+        ever match, and a listed session id is the only stable identity it carries.
         """
         scope = self.scope
         if scope is None:
@@ -686,6 +689,12 @@ class WakeEmitter:
             need_task = scope.get("require_task_id", False)
             if not isinstance(session_ids, list) or not isinstance(need_task, bool):
                 return False
+            # Explicit consent for genuine interactive sessions. A malformed value
+            # rejects (deny-safe); an empty one is a no-op that widens nothing.
+            interactive = scope.get("interactive_sessions", [])
+            if not isinstance(interactive, list) or any(
+                    not isinstance(s, str) or not s for s in interactive):
+                return False
             # Additional deny only: a malformed exclude list rejects the turn,
             # an empty or absent one is a no-op that cannot widen the allowlist.
             excluded = scope.get("task_id_exclude_prefixes", [])
@@ -696,7 +705,7 @@ class WakeEmitter:
             allowed = scope.get("task_id_prefix_allow", [])
             if not isinstance(allowed, list) or any(not isinstance(p, str) for p in allowed):
                 return False
-            if not session_ids and not need_task and not allowed:
+            if not session_ids and not need_task and not allowed and not interactive:
                 return False
             if session_ids and payload.get("session_id") not in session_ids:
                 return False
@@ -705,6 +714,10 @@ class WakeEmitter:
                 return False
             if isinstance(task_id, str) and any(task_id.startswith(p) for p in excluded):
                 return False
+            # A listed interactive session is in scope whatever shape its minted
+            # task id has; the exclude deny-list above still wins.
+            if payload.get("session_id") in interactive:
+                return True
             if allowed and (not isinstance(task_id, str)
                             or not any(task_id.startswith(p) for p in allowed)):
                 return False
