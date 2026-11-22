@@ -88,8 +88,12 @@ def load_config(path):
         return yaml.safe_load(handle)
 
 
-def save_config(path, data):
-    """Atomic replace: dump to a sibling temp file, then os.replace."""
+def save_config(path, data, rehearse_phase=None):
+    """Atomic replace: dump to a sibling temp file, then os.replace.
+    
+    If rehearse_phase is provided and WAKE_STOP_AFTER matches, simulate a crash
+    after writing the temp file but before the atomic replace.
+    """
     path = Path(path)
     descriptor, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
                                             dir=str(path.parent))
@@ -100,13 +104,77 @@ def save_config(path, data):
             else:
                 import yaml
                 yaml.safe_dump(data, handle, sort_keys=False)
+        # Rehearsal crash injection: after temp write, before atomic replace
+        if rehearse_phase and os.environ.get("WAKE_STOP_AFTER") == rehearse_phase:
+            print(f"SIMULATED DEATH after {rehearse_phase} (temp written, before replace)")
+            raise SystemExit(3)
         os.replace(tmp_name, path)
-    except Exception:
+    except BaseException:
         try:
             os.unlink(tmp_name)
         except OSError:
             pass
         raise
+
+
+def dry_run_verify(paths):
+    """Dry-run verification: simulate apply and show before/after hashes + diff count.
+    
+    Does NOT write anything. Returns dict with before_hash, after_hash, diff_lines.
+    """
+    import difflib
+    
+    # Load current config
+    config_text = paths.config.read_text(encoding="utf-8")
+    before_hash = sha256(paths.config)
+    
+    # Simulate the config mutation
+    config = load_config(paths.config)
+    enable_in_config(config, paths)
+    
+    # Serialize to string for diff
+    if YAML_LIB == "ruamel":
+        from io import StringIO
+        buf = StringIO()
+        _ruamel().dump(config, buf)
+        after_text = buf.getvalue()
+    else:
+        import yaml
+        after_text = yaml.dump(config, sort_keys=False)
+    
+    after_hash = hashlib.sha256(after_text.encode("utf-8")).hexdigest()
+    
+    # Compute diff line count
+    diff = list(difflib.unified_diff(
+        config_text.splitlines(keepends=True),
+        after_text.splitlines(keepends=True),
+        lineterm=""
+    ))
+    # Count non-header diff lines (lines starting with + or -)
+    diff_lines = sum(1 for line in diff if line.startswith(("+", "-")) and not line.startswith(("+++", "---")))
+    
+    return {
+        "before_hash": before_hash,
+        "after_hash": after_hash,
+        "diff_lines": diff_lines,
+        "before_text": config_text,
+        "after_text": after_text,
+    }
+
+
+def verify_dry_run(paths):
+    """Handler for --verify: print dry-run verification results."""
+    result = dry_run_verify(paths)
+    print(f"VERIFY (dry-run; no writes)")
+    print(f"  config:     {paths.config}")
+    print(f"  before sha: {result['before_hash']}")
+    print(f"  after sha:  {result['after_hash']}")
+    print(f"  diff lines: {result['diff_lines']}")
+    if result['diff_lines'] == 0:
+        print("  No changes would be made.")
+    else:
+        print(f"  {result['diff_lines']} line(s) would change.")
+    return 0
 
 
 def sha256(path):
@@ -403,6 +471,49 @@ def run_pane_read(pane_read, lane, timeout=60):
 
 # -- config mutation --------------------------------------------------------
 
+def check_plugin_state_consistency(paths):
+    """Verify three-way plugin state coherence.
+    
+    Returns (is_consistent, details) where details explains any inconsistency.
+    The three pillars:
+    1. Plugin ID in plugins.enabled list
+    2. Plugin entry settings.enabled == True
+    3. Plugin directory exists at paths.dst
+    
+    For a fully applied state: all three should be True.
+    For a fully rolled-back state: all three should be False.
+    Any mixed state is inconsistent.
+    """
+    config = load_config(paths.config) if paths.config.is_file() else None
+    flag = read_flag(config)
+    in_enabled_list = flag["in_enabled_list"]
+    settings_enabled = flag["settings_enabled"]
+    plugin_dir_exists = paths.dst.exists()
+    
+    # Count how many are True
+    true_count = sum([in_enabled_list, settings_enabled, plugin_dir_exists])
+    
+    if true_count == 0 or true_count == 3:
+        return True, "consistent"
+    
+    # Inconsistent - report which disagree
+    parts = []
+    if in_enabled_list:
+        parts.append("enabled list says ON")
+    else:
+        parts.append("enabled list says OFF")
+    if settings_enabled:
+        parts.append("settings.enabled says ON")
+    else:
+        parts.append("settings.enabled says OFF")
+    if plugin_dir_exists:
+        parts.append("plugin directory EXISTS")
+    else:
+        parts.append("plugin directory ABSENT")
+    
+    return False, f"inconsistent: {', '.join(parts)}"
+
+
 def reviewed_python_executable(paths):
     """Caller-supplied interpreter, else this interpreter when it is a venv.
 
@@ -600,7 +711,9 @@ def apply(paths, expected_sha=None, expected_config_sha=None, rehearse=False):
 
     config = load_config(paths.config)
     enable_in_config(config, paths)
-    save_config(paths.config, config)
+    save_config(paths.config, config, rehearse_phase="config_temp_written" if rehearse else None)
+    # Measure config_sha256_after immediately after the mutation, by hashing the file.
+    config_after = sha256(paths.config)
     readback = read_flag(load_config(paths.config))
     if readback["flag_state"] != "ON":
         print(f"REFUSED: config readback flag_state={readback['flag_state']!r}; reverting")
@@ -622,6 +735,7 @@ def apply(paths, expected_sha=None, expected_config_sha=None, rehearse=False):
 
     record["state"] = "applied"
     record["flag_state"] = "ON"
+    record["config_sha256_after"] = config_after
     record["installed_hashes"] = installed
     record["post_install_verification"] = verification
     write_record(paths.record, record)  # flip PRE -> COMPLETE
@@ -644,6 +758,29 @@ def rollback(paths):
                                      "config_hash_matches": True,
                                      "plugin_dir_absent": not paths.dst.exists()}))
         return 0
+
+    # First, check if we have a valid backup that can restore consistency.
+    # If so, proceed with rollback regardless of current inconsistent state.
+    have_valid_backup = False
+    if record and record.get("backup_path"):
+        backup = Path(record["backup_path"])
+        expected = record.get("config_sha256_before")
+        if backup.is_file() and expected is not None:
+            backup_sha = sha256(backup)
+            if backup_sha == expected:
+                have_valid_backup = True
+
+    if not have_valid_backup:
+        # No valid backup - check consistency and refuse if inconsistent
+        consistent, details = check_plugin_state_consistency(paths)
+        if not consistent:
+            print(f"REFUSED: plugin state inconsistency detected and no valid backup: {details}")
+            print("RESULT " + json.dumps({"action": "rollback", "verified": False,
+                                         "reason": "plugin state inconsistency",
+                                         "details": details,
+                                         "plugin_dir_absent": not paths.dst.exists()}))
+            return 1
+
     if not record or not record.get("backup_path"):
         print("REFUSED: no activation record with a config backup; cannot verify a restore")
         print("RESULT " + json.dumps({"action": "rollback", "verified": False,
@@ -792,6 +929,8 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--verify", action="store_true",
+                        help="dry-run verification: show before/after config hashes and diff line count")
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--rehearse", action="store_true",
                         help="enable crash/drift injection; disposable fake homes only")
@@ -809,6 +948,8 @@ def main(argv=None):
                   f"{real_home}; use a disposable fake home")
             return 2
 
+    if args.verify:
+        return verify_dry_run(paths)
     if args.rollback:
         return rollback(paths)
     if args.status:
