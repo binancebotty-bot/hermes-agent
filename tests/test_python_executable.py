@@ -73,6 +73,10 @@ def _fixture(tmp_path, monkeypatch, emitter, *, python_executable=None, run=None
         "pane_read_path": str(pane_read),
         "journal_path": str(tmp_path / "journal.jsonl"),
         "peer_map_path": str(peer),
+        # This fixture pins python_executable plumbing, not W1b routing: opt into
+        # the legacy global-lane path and isolate the store in tmp.
+        "binding_path": str(tmp_path / "task_bindings.jsonl"),
+        "allow_unbound_global_fallback": True,
     }
     if python_executable is not None:
         cfg["python_executable"] = python_executable

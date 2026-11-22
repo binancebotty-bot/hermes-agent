@@ -53,6 +53,10 @@ def _worker(tmp_path, emitter, scope=_NO_SCOPE):
     cfg = {
         "enabled": True, "lane": LANE, "sender_path": str(sender),
         "journal_path": str(journal), "peer_map_path": str(peer),
+        # These tests pin scope filtering, not W1b delivery routing: opt into the
+        # documented legacy global-lane path and keep the store isolated in tmp.
+        "binding_path": str(tmp_path / "task_bindings.jsonl"),
+        "allow_unbound_global_fallback": True,
     }
     if scope is not _NO_SCOPE:
         cfg["scope"] = scope

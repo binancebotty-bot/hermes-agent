@@ -1,0 +1,354 @@
+FFFFFFFFF                                                                [100%]
+================================== FAILURES ===================================
+______________ test_bound_task_delivers_to_its_own_conversation _______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_bound_task_delivers_to_it0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E242750>
+
+    def test_bound_task_delivers_to_its_own_conversation(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_bound_task_delivers_to_it0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+_____________ test_two_tasks_with_different_bindings_do_not_cross _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_two_tasks_with_different_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E27BA50>
+
+    def test_two_tasks_with_different_bindings_do_not_cross(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_two_tasks_with_different_0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+__________ test_unbound_task_records_unbound_task_and_sends_nothing ___________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_unbound_task_records_unbo0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E221590>
+
+    def test_unbound_task_records_unbound_task_and_sends_nothing(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter)  # store active, global lane resolvable
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_unbound_task_records_unbo0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+_____________ test_generation_mismatch_refuses_and_sends_nothing ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_generation_mismatch_refus0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E1F0C90>
+
+    def test_generation_mismatch_refuses_and_sends_nothing(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:147: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_generation_mismatch_refus0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+____________ test_binding_survives_fresh_emitter_instance_restart _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_binding_survives_fresh_em0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E20AB10>
+
+    def test_binding_survives_fresh_emitter_instance_restart(tmp_path, monkeypatch):
+        emitter = _load()
+>       first, _journal = _worker(tmp_path, emitter)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:162: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_binding_survives_fresh_em0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+____________ test_binding_write_is_atomic_under_concurrent_writers ____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_binding_write_is_atomic_u0')
+
+    def test_binding_write_is_atomic_under_concurrent_writers(tmp_path):
+        emitter = _load()
+>       worker, _journal = _worker(tmp_path, emitter)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:180: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_binding_write_is_atomic_u0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+______________ test_global_fallback_only_when_explicitly_enabled ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_global_fallback_only_when0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E128450>
+
+    def test_global_fallback_only_when_explicitly_enabled(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter, allow_fallback=True)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:202: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_global_fallback_only_when0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = True, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+___ test_busy_pane_retries_on_next_invocation_instead_of_reconcile_unproven ___
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_busy_pane_retries_on_next0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E1AE690>
+
+    def test_busy_pane_retries_on_next_invocation_instead_of_reconcile_unproven(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:215: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_busy_pane_retries_on_next0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+____ test_uncertain_sender_line_is_not_terminal_and_reconciles_as_pending _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_uncertain_sender_line_is_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015C9E1CFCD0>
+
+    def test_uncertain_sender_line_is_not_terminal_and_reconciles_as_pending(tmp_path, monkeypatch):
+        emitter = _load()
+>       worker, journal = _worker(tmp_path, emitter)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_binding.py:243: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9979/test_uncertain_sender_line_is_0')
+emitter_module = <module 'wake-emitter.emitter' from 'C:\\Users\\wigmore\\oc-runs\\w1-activate-w1\\plugins\\wake-emitter\\emitter.py'>
+allow_fallback = False, with_store = True
+
+    def _worker(tmp_path, emitter_module, *, allow_fallback=False, with_store=True):
+        """Two lanes in the peer map; global lane is LANE_A (conv A)."""
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        journal = tmp_path / "journal.jsonl"
+        peer = tmp_path / "peer_lane_map.json"
+        peer.write_text(json.dumps({"lanes": {
+            LANE_A: {"conv": CONV_A, "generation": GEN},
+            LANE_B: {"conv": CONV_B, "generation": GEN},
+        }}), encoding="utf-8")
+        sender = tmp_path / "sender.py"
+        sender.write_text("print('GUARD_COMPLETE key=x')\n", encoding="utf-8")
+        kwargs = dict(journal_path=str(journal), peer_map_path=str(peer), sender_path=str(sender),
+                      lane=LANE_A, enabled=True)
+        if with_store:
+            kwargs["binding_path"] = str(tmp_path / "task_bindings.jsonl")
+        kwargs["allow_unbound_global_fallback"] = allow_fallback
+>       return emitter_module.WakeEmitter(**kwargs), journal
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: WakeEmitter.__init__() got an unexpected keyword argument 'binding_path'
+
+tests\test_binding.py:52: TypeError
+=========================== short test summary info ===========================
+FAILED tests/test_binding.py::test_bound_task_delivers_to_its_own_conversation
+FAILED tests/test_binding.py::test_two_tasks_with_different_bindings_do_not_cross
+FAILED tests/test_binding.py::test_unbound_task_records_unbound_task_and_sends_nothing
+FAILED tests/test_binding.py::test_generation_mismatch_refuses_and_sends_nothing
+FAILED tests/test_binding.py::test_binding_survives_fresh_emitter_instance_restart
+FAILED tests/test_binding.py::test_binding_write_is_atomic_under_concurrent_writers
+FAILED tests/test_binding.py::test_global_fallback_only_when_explicitly_enabled
+FAILED tests/test_binding.py::test_busy_pane_retries_on_next_invocation_instead_of_reconcile_unproven
+FAILED tests/test_binding.py::test_uncertain_sender_line_is_not_terminal_and_reconciles_as_pending
+9 failed in 0.35s

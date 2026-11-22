@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -37,6 +38,11 @@ ABANDONED_STALE = "ABANDONED_STALE"
 # turn_id absent: no positional identity, no dedupe; the event uuid is the identity.
 AT_LEAST_ONCE_KEY = "none:at-least-once"
 STATUS_SUFFIX = ".status.json"
+# Durable-binding outcomes: truthful non-delivery, never a silent global fallback.
+UNBOUND_TASK = "UNBOUND_TASK"
+STALE_GENERATION = "STALE_GENERATION"
+BINDING_LANE_UNRESOLVED = "BINDING_LANE_UNRESOLVED"
+BINDING_INVALID = "BINDING_INVALID"
 # Default-deny scope gate: one stable status for every out-of-scope turn.
 SKIPPED_OUT_OF_SCOPE = "SKIPPED_OUT_OF_SCOPE"
 # Cross-process writer coordination. An advisory file lock held only for one
@@ -161,8 +167,25 @@ def _classify_sender_output(output, returncode):
         return "REFUSED:NO_DELIVERY_PROOF"
     for line in lines:
         if line.startswith("UNCERTAIN"):
-            return "UNCERTAIN:" + line[len("UNCERTAIN"):].strip()
+            # An UNCERTAIN line is ambiguous: not a delivery proof and not a
+            # terminal state. Normalise it to DELIVERY_PENDING so it settles
+            # only through the one bounded DELIVERY_PENDING sweep, on pane
+            # evidence alone. Never dedupe it as a completed delivery.
+            return DELIVERY_PENDING
     return "REFUSED:EXIT_%s" % returncode
+
+
+def _is_no_send_outcome(outcome):
+    """Definitive no-send: the sender refused before submitting anything.
+
+    A BUSY pane is the named case; the real sender's BUSY refusal reaches us as
+    REFUSED: with "busy" in its text. Keeping the write-ahead intent for these
+    would strand a retry as RECONCILE_UNPROVEN, so they void the intent instead.
+    """
+    if not isinstance(outcome, str):
+        return False
+    return outcome == "DELIVERED_BUSY" or (
+        outcome.startswith("REFUSED:") and "busy" in outcome.lower())
 
 
 def resolve_origin(peer_map: dict, lane: str | None):
@@ -272,6 +295,100 @@ def _delivery_present(turns, event_id):
     return any(_delivery_candidate(text, event_id) for text in turns)
 
 
+# -- durable task binding store -------------------------------------------
+# In-process mutual exclusion complements the cross-process advisory lock: the
+# journal lock is reentrant per process, so two threads need their own gate.
+_BINDING_THREAD_LOCKS = {}
+_BINDING_THREAD_GUARD = threading.Lock()
+
+
+def _binding_thread_lock(path):
+    with _BINDING_THREAD_GUARD:
+        lock = _BINDING_THREAD_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _BINDING_THREAD_LOCKS[path] = lock
+        return lock
+
+
+class TaskBindingStore:
+    """Durable JSON-lines task/session -> conversation+generation bindings.
+
+    One append-only row per bind; later rows for the same key supersede earlier
+    ones. A plain file reader needs no gateway, daemon or dependency. Reads and
+    writes are strict-equality keyed: task A can never resolve to task B's row.
+    """
+
+    def __init__(self, path, lock_timeout_seconds=LOCK_TIMEOUT_SECONDS):
+        self.path = Path(path)
+        self.lock_path = Path(str(self.path) + ".lock")
+        self.lock_timeout_seconds = float(lock_timeout_seconds)
+
+    def _rows(self):
+        if not self.path.exists():
+            return []
+        rows = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and row.get("kind") == "binding":
+                rows.append(row)
+        return rows
+
+    def _append(self, row):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = (json.dumps(row, sort_keys=True) + "\n").encode("utf-8")
+        descriptor = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
+        try:
+            view = memoryview(line)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short binding write")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def bind(self, *, task_id=None, session_id=None, conversation_id=None, generation=None,
+             bound_by=None, bound_utc=None):
+        """Append one binding atomically. Never write a partial or torn row."""
+        if not task_id and not session_id:
+            raise ValueError("a binding needs task_id or session_id")
+        if not conversation_id or generation is None:
+            raise ValueError("a binding needs conversation_id and generation")
+        row = {"kind": "binding", "task_id": task_id, "session_id": session_id,
+               "conversation_id": conversation_id, "generation": generation,
+               "bound_utc": bound_utc or _utc_now(), "bound_by": bound_by}
+        with _binding_thread_lock(str(self.path)):
+            if not _acquire_journal_lock(str(self.lock_path), self.lock_timeout_seconds):
+                raise OSError("binding lock unavailable")
+            try:
+                self._append(row)
+            finally:
+                _release_journal_lock(str(self.lock_path))
+        return dict(row)
+
+    def lookup(self, task_id=None, session_id=None):
+        """Latest exact-key binding only; task_id takes precedence over session."""
+        by_task = {}
+        by_session = {}
+        for row in self._rows():
+            if row.get("task_id"):
+                by_task[row["task_id"]] = row
+            if row.get("session_id"):
+                by_session[row["session_id"]] = row
+        if task_id is not None and task_id in by_task:
+            return dict(by_task[task_id])
+        if session_id is not None and session_id in by_session:
+            return dict(by_session[session_id])
+        return None
+
+
 class WakeEmitter:
     """Append-only journal + guarded sender invocation. One instance per process."""
 
@@ -279,7 +396,8 @@ class WakeEmitter:
                  ack_horizon_seconds=ACK_HORIZON_SECONDS, lane=None, enabled=False, logger=None,
                  lock_timeout_seconds=None, scope=None, python_executable=None,
                  hook_budget_seconds=HOOK_BUDGET_SECONDS,
-                 retry_horizon_seconds=RETRY_HORIZON_SECONDS):
+                 retry_horizon_seconds=RETRY_HORIZON_SECONDS,
+                 binding_path=None, allow_unbound_global_fallback=False, bindings=None):
         self.journal_path = Path(journal_path)
         self.peer_map_path = Path(peer_map_path)
         # One interpreter governs every child this emitter spawns. Cron workers
@@ -305,6 +423,12 @@ class WakeEmitter:
         # Whole-hook wall-clock budget; the host abandons the callback at 30 s.
         self.hook_budget_seconds = float(hook_budget_seconds)
         self.retry_horizon_seconds = float(retry_horizon_seconds)
+        # A binding store activates fail-closed resolution. No store path keeps
+        # legacy component-instantiation behaviour; operators opt back in with
+        # allow_unbound_global_fallback. build_from_ctx always configures a store.
+        self.bindings = bindings if bindings is not None else (
+            TaskBindingStore(binding_path) if binding_path else None)
+        self.allow_unbound_global_fallback = bool(allow_unbound_global_fallback)
 
     # -- journal -----------------------------------------------------------
     def _rows(self):
@@ -623,9 +747,17 @@ class WakeEmitter:
         is appended and fsynced BEFORE the sender subprocess is invoked, so a
         death after the physical send is distinguishable from a death before
         it, and two processes cannot both decide to send the same event.
+
+        The send target is resolved first from the durable task binding. An
+        unbound task never silently uses the global lane (fail closed); a stale
+        generation is refused before any send.
         """
-        lane = self.lane or payload.get("lane")
-        origin = self._resolve_origin(lane)
+        target = self._resolve_send_target(payload)
+        if target["refusal"]:
+            self._record(event_id, target["refusal"], target.get("details"))
+            return target["refusal"]
+        lane = target["lane"]
+        origin = target["origin"]
         if origin is None:
             self._record(event_id, "BLOCKED_UNRESOLVED_ORIGIN")
             return "BLOCKED_UNRESOLVED_ORIGIN"
@@ -648,6 +780,58 @@ class WakeEmitter:
                 return DELIVERY_PENDING
             self._record_attempt(event_id, ATTEMPTED, argv)
             return self._send_and_record(event_id, argv)
+
+    def _resolve_send_target(self, payload):
+        """Return {origin, lane, refusal, details}; fail closed when unbound."""
+        task_id = payload.get("task_id")
+        session_id = payload.get("session_id")
+        binding = self.bindings.lookup(task_id, session_id) if self.bindings else None
+        if binding is not None:
+            return self._resolve_from_binding(binding)
+        global_lane = self.lane or payload.get("lane")
+        global_origin = self._resolve_origin(global_lane) if global_lane else None
+        # The defect being closed: a resolvable global lane must NOT silently
+        # carry an unbound task. With no store configured at all, legacy
+        # component behaviour is unchanged.
+        if (self.bindings is not None and global_origin is not None
+                and not self.allow_unbound_global_fallback):
+            return {"origin": None, "lane": None, "refusal": UNBOUND_TASK,
+                    "details": {"task_id": task_id, "session_id": session_id}}
+        return {"origin": global_origin, "lane": global_lane, "refusal": None}
+
+    def _resolve_from_binding(self, binding):
+        """Aim at the bound conversation; refuse any generation mismatch.
+
+        The peer map is the authority for the conversation's current generation
+        and its lane. A mismatch means the pane rotated: refuse before sending,
+        recording both generations so the refusal is truthful and auditable.
+        """
+        conv = binding.get("conversation_id")
+        bound_gen = binding.get("generation")
+        if not conv or bound_gen is None:
+            return {"origin": None, "lane": None, "refusal": BINDING_INVALID, "details": {}}
+        try:
+            peer = json.loads(self.peer_map_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            peer = {}
+        lanes = peer.get("lanes") if isinstance(peer, dict) else None
+        lane = None
+        observed = None
+        if isinstance(lanes, dict):
+            for name, entry in lanes.items():
+                if isinstance(entry, dict) and entry.get("conv") == conv:
+                    lane, observed = name, entry.get("generation")
+                    break
+        details = {"conversation_id": conv, "bound_generation": bound_gen,
+                   "observed_generation": observed}
+        if lane is None:
+            return {"origin": None, "lane": None, "refusal": BINDING_LANE_UNRESOLVED,
+                    "details": details}
+        if observed != bound_gen:
+            return {"origin": None, "lane": None, "refusal": STALE_GENERATION,
+                    "details": details}
+        return {"origin": {"conv": conv, "generation": bound_gen},
+                "lane": lane, "refusal": None, "details": details}
 
     def _resume_event(self, event_id, payload):
         """Reconcile an event that has no terminal delivery outcome.
@@ -712,6 +896,11 @@ class WakeEmitter:
         finally:
             self._sender_deadline = None
         self._record(event_id, outcome)
+        if _is_no_send_outcome(outcome):
+            # A BUSY/refused pane had no physical send. Void the write-ahead
+            # intent so the next idle invocation retries instead of reconciling
+            # an intent that never represented a delivered message.
+            self._void_attempt(event_id, outcome)
         return outcome
 
     def _resolve_origin(self, lane):
@@ -723,9 +912,26 @@ class WakeEmitter:
 
     @staticmethod
     def _has_attempt(rows, event_id):
-        """True when any write-ahead send intent exists for this event."""
-        return any(row.get("kind") == "attempt" and row.get("event_id") == event_id
-                   for row in rows)
+        """True when a live write-ahead send intent exists for this event.
+
+        A later attempt_void cancels only the attempts before it; a fresh send
+        after the void is still a live intent. This is what lets a definitive
+        BUSY no-send retry on the next idle invocation instead of reconciling.
+        """
+        last_void = -1
+        for index, row in enumerate(rows):
+            if row.get("kind") == "attempt_void" and row.get("event_id") == event_id:
+                last_void = index
+        for index, row in enumerate(rows):
+            if (row.get("kind") == "attempt" and row.get("event_id") == event_id
+                    and index > last_void):
+                return True
+        return False
+
+    def _void_attempt(self, event_id, reason):
+        """Cancel a write-ahead intent when the sender definitively did not send."""
+        self._append({"kind": "attempt_void", "event_id": event_id,
+                      "utc": _utc_now(), "reason": reason})
 
     def _record_attempt(self, event_id, stage, argv):
         """Write-ahead intent: a send may have happened. No secrets in argv."""
@@ -993,6 +1199,9 @@ def build_from_ctx(ctx):
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
         hook_budget_seconds=config("hook_budget_seconds", HOOK_BUDGET_SECONDS),
         retry_horizon_seconds=config("retry_horizon_seconds", RETRY_HORIZON_SECONDS),
+        binding_path=config("binding_path",
+                            str(Path.home() / ".hermes" / "state" / "task_bindings.jsonl")),
+        allow_unbound_global_fallback=bool(config("allow_unbound_global_fallback", False)),
         lane=config("lane", None),
         enabled=bool(config("enabled", False)),
         scope=config("scope", None),

@@ -85,3 +85,45 @@ $PY scripts/rehearse_activation.py
 - Real config round-trip: enabling on a **copy** of the real `config.yaml` produces a 23-line diff
   (one list entry + the plugin's settings block); no comments exist in the real file and none are lost.
 - Real pane: `pane_read.py gpt6:assistant --json` → `MATCHED_BY_CONV 6b01a297`, exit 0 (read-only).
+
+## W1b — durable task binding and fail-closed delivery
+
+The installed `turn_finalizer` emits no conversation or generation, so the emitter's single
+globally configured lane sent every wake to the same conversation. W1b adds a durable,
+gateway-free binding store in `plugins/wake-emitter/emitter.py` and resolves the send target
+from it at send time.
+
+**Binding schema** — one JSON-lines row per bind in `binding_path`
+(default `~/.hermes/state/task_bindings.jsonl`):
+
+```json
+{"kind":"binding","task_id":"cron:abc:1","session_id":null,
+ "conversation_id":"https://chatgpt.com/c/<id>","generation":3,
+ "bound_utc":"2026-11-22T15:00:00Z","bound_by":"dispatcher"}
+```
+
+Keys are strict-equality (`task_id` first, `session_id` fallback); a later row for the same
+key supersedes earlier ones. Writes are one fsynced append under an advisory + in-process
+lock, so concurrent writers cannot lose or tear a row, and a fresh process reads the same
+file with no gateway or daemon.
+
+**Fail-closed rule:** a bound task is sent to its bound conversation/generation; the peer
+map must still report that exact generation, or the send is refused as `STALE_GENERATION`
+(never into a rotated pane). An unbound task records `UNBOUND_TASK` and sends nothing — it
+is never silently routed to the global lane. Only `allow_unbound_global_fallback: true`
+restores the old global-lane behaviour. When no `binding_path` is configured at all, the
+legacy component path is unchanged. `UNBOUND_TASK` and `STALE_GENERATION` are terminal
+outcomes, so they cannot be retried into a wrong conversation.
+
+**Two defects fixed in the same analysis:**
+
+- BUSY no-send: the write-ahead `ATTEMPTED` intent is now voided for a definitive BUSY/refused
+  pane, so a stranded event retries on the next idle invocation instead of being reported as
+  `RECONCILE_UNPROVEN` — `tests/test_binding.py::test_busy_pane_retries_on_next_invocation_instead_of_reconcile_unproven`.
+- UNCERTAIN misclassification: a literal `UNCERTAIN:` sender line is normalised to
+  `DELIVERY_PENDING` rather than a terminal outcome, so it is never a delivery proof and
+  settles only through the existing pane-evidence sweep —
+  `tests/test_binding.py::test_uncertain_sender_line_is_not_terminal_and_reconciles_as_pending`.
+
+**Evidence:** RED `PYTEST_EXIT=1` (9 failed) — `RED_W1B.txt`; GREEN `PYTEST_EXIT=0`
+(9 passed) — `GREEN_W1B.txt`; full suite `FULL_EXIT=0` (132 passed) — `GREEN_FULL_W1B.txt`.
