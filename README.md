@@ -231,3 +231,35 @@ both the no-flag skip and the preserved bounded wider read for a capable tool.
 test file) — `RED_W1E_CORRECTED.txt`; GREEN `PYTEST_EXIT=0` (5 passed) —
 `GREEN_W1E.txt`; full suite `PYTEST_EXIT=0` (149 passed = 144 existing + 5 new) —
 `GREEN_FULL_W1E.txt`.
+
+## W1i — provable config apply guard (staging only)
+
+`scripts/config_apply_guard.py` serialises our own writers with an exclusive
+`<config>.lock` sidecar (O_CREAT|O_EXCL, pid recorded, dead-pid locks broken,
+released in `finally`), refuses on pre-replace drift with both hashes
+(`DRIFT_DETECTED`), writes+fsyncs a temp file in the target's directory, commits
+with one `os.replace`, then re-reads the target and raises `POST_VERIFY_MISMATCH`
+on disagreement. Tested only against temp fixtures — no live config, apply,
+deploy, restart or cron.
+
+Residual window, in operations: after the pre-hash check the guard does exactly
+five filesystem operations — temp open, candidate write, fsync, close,
+`os.replace`. An unknown writer that does not honour our sidecar lock can still
+write inside those five operations; our rename then overwrites it and the
+pre-hash check cannot see it. The post-verify read catches writers that act
+after our rename, not writers whose bytes we overwrote. The guard narrows the
+race to five operations; it cannot eliminate it without a cooperating writer.
+
+**Exact operator / cron-style check (installs no cron):**
+
+```bash
+PY="env -u PYTHONPATH HERMES_DISABLE_LAZY_INSTALLS=1 C:/Users/wigmore/.hermes/hermes-agent/venv/Scripts/python.exe"
+# once, while the config is known-good:
+$PY scripts/config_apply_guard.py record-baseline --config /path/to/config.yaml --baseline /path/to/baseline.json
+# every check (exit 0 MATCH, 2 DRIFT_DETECTED with CHANGED_PATH lines, 3 error):
+$PY scripts/config_apply_guard.py monitor --config /path/to/config.yaml --baseline /path/to/baseline.json
+```
+
+**Evidence:** RED `PYTEST_EXIT=1` (12 failed, module absent) — `RED_W1I.txt`;
+GREEN `PYTEST_EXIT=0` (12 passed) — `GREEN_W1I.txt`; full suite `PYTEST_EXIT=0`
+(180 passed) — `GREEN_FULL_W1I.txt`; executed fault table — `EVIDENCE_W1I.txt`.

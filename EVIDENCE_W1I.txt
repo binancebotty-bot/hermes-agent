@@ -1,0 +1,11 @@
+fault | code | target_sha256 | target_state | lock_left | temp_left
+--- | --- | --- | --- | --- | ---
+1 lock held by other process | LOCK_HELD | a073ca8e2badbd4e24b0f979f0f19f5dd3ef41b9d6f5504205d4766e5ef1a3c7 | FULLY_OLD | True | 0
+2 stale lock from dead pid | APPLIED | 5126bb4476e4587699018c887aa27ceacc64a346660aa496e3b7ba82cc52fe3c | FULLY_NEW | False | 0
+3 drift before replace | DRIFT_DETECTED | 62f7430887f06d212541ec9c76bd6286619c9d1f9bd29eebfa4262de08a2b200 | UNCHANGED_AS_FOUND | False | 0
+4 temp write fails | TEMP_WRITE_FAILED | a073ca8e2badbd4e24b0f979f0f19f5dd3ef41b9d6f5504205d4766e5ef1a3c7 | FULLY_OLD | False | 0
+5 replace fails mid-way | REPLACE_FAILED | a073ca8e2badbd4e24b0f979f0f19f5dd3ef41b9d6f5504205d4766e5ef1a3c7 | FULLY_OLD | False | 0
+6 post-verify mismatch | POST_VERIFY_MISMATCH | 5126bb4476e4587699018c887aa27ceacc64a346660aa496e3b7ba82cc52fe3c | FULLY_NEW | False | 0
+
+OLD_sha256=a073ca8e2badbd4e24b0f979f0f19f5dd3ef41b9d6f5504205d4766e5ef1a3c7
+NEW_sha256=5126bb4476e4587699018c887aa27ceacc64a346660aa496e3b7ba82cc52fe3c

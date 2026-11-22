@@ -1,0 +1,40 @@
+FFFFFFFFFFFF                                                             [100%]
+================================== FAILURES ===================================
+__________________ test_happy_path_applies_and_releases_lock __________________
+config_apply_guard module is not implemented
+_______________ test_fault_lock_held_by_another_process_refuses _______________
+config_apply_guard module is not implemented
+______________ test_fault_stale_lock_from_dead_pid_is_recovered _______________
+config_apply_guard module is not implemented
+__________ test_fault_drift_before_replace_refuses_with_both_hashes ___________
+config_apply_guard module is not implemented
+____________ test_fault_temp_write_failure_leaves_target_fully_old ____________
+config_apply_guard module is not implemented
+_____________ test_fault_replace_failure_leaves_target_fully_old ______________
+config_apply_guard module is not implemented
+_____________ test_fault_post_verify_mismatch_is_a_named_failure ______________
+config_apply_guard module is not implemented
+________________________ test_monitor_matches_baseline ________________________
+config_apply_guard module is not implemented
+___________ test_monitor_names_changed_yaml_paths_and_exits_nonzero ___________
+config_apply_guard module is not implemented
+________________ test_monitor_refuses_tampered_baseline_record ________________
+config_apply_guard module is not implemented
+______________ test_monitor_cli_exits_zero_when_baseline_matches ______________
+config_apply_guard module is not implemented
+________ test_module_docstring_documents_residual_window_in_operations ________
+config_apply_guard module is not implemented
+=========================== short test summary info ===========================
+FAILED tests/test_config_apply_guard.py::test_happy_path_applies_and_releases_lock
+FAILED tests/test_config_apply_guard.py::test_fault_lock_held_by_another_process_refuses
+FAILED tests/test_config_apply_guard.py::test_fault_stale_lock_from_dead_pid_is_recovered
+FAILED tests/test_config_apply_guard.py::test_fault_drift_before_replace_refuses_with_both_hashes
+FAILED tests/test_config_apply_guard.py::test_fault_temp_write_failure_leaves_target_fully_old
+FAILED tests/test_config_apply_guard.py::test_fault_replace_failure_leaves_target_fully_old
+FAILED tests/test_config_apply_guard.py::test_fault_post_verify_mismatch_is_a_named_failure
+FAILED tests/test_config_apply_guard.py::test_monitor_matches_baseline - Fail...
+FAILED tests/test_config_apply_guard.py::test_monitor_names_changed_yaml_paths_and_exits_nonzero
+FAILED tests/test_config_apply_guard.py::test_monitor_refuses_tampered_baseline_record
+FAILED tests/test_config_apply_guard.py::test_monitor_cli_exits_zero_when_baseline_matches
+FAILED tests/test_config_apply_guard.py::test_module_docstring_documents_residual_window_in_operations
+12 failed in 0.17s
