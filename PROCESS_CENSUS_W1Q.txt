@@ -1,0 +1,6 @@
+PID=42332 PPID=51972 START=2026-11-20 18:51:45 NAME=python.exe CMD=C:\Users\wigmore\.hermes\tools\python-3.14.9+20261021-win32-x64\python.exe -m hermes_cli.main --profile default gateway run --quiet
+PID=12312 PPID=3724 START=2026-11-18 22:56:23 NAME=hermes.exe CMD=C:\Users\wigmore\.hermes\hermes-agent\.venv\Scripts\hermes.exe serve --skip-build
+PID=23600 PPID=12312 START=2026-11-18 22:56:23 NAME=python.exe CMD=C:\Users\wigmore\.hermes\hermes-agent\.venv\Scripts\python.exe C:\Users\wigmore\.hermes\hermes-agent\.venv\Scripts\hermes.exe serve --skip-build
+PID=23092 PPID=23600 START=2026-11-18 22:56:23 NAME=python.exe CMD=C:\Users\wigmore\AppData\Local\Programs\Python\Python311\python.exe C:\Users\wigmore\.hermes\hermes-agent\.venv\Scripts\hermes.exe serve --skip-build
+PID=18936 PPID=23092 START=2026-11-18 22:56:24 NAME=python.exe CMD=C:\Users\wigmore\.hermes\tools\python-3.14.9+20261021-win32-x64\python.exe -I -c import sys, runpy; sys.path.insert(0, 'C:\\Users\\wigmore\\.hermes\\hermes-agent'); sys.argv = ['C:\\Users\\wigmore\\.h
+PID=7856 PPID=12784 START=2026-11-18 22:53:46 NAME=Hermes.exe CMD=C:\Users\wigmore\.hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe

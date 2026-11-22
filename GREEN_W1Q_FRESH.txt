@@ -1,0 +1,20 @@
+CHILD_RC= 0
+{"hook_results": ["DELIVERED_UNACKED"], "sweep_result": ["SKIPPED"], "discovered": true, "saw_plugin": true, "rows": [["event", "e233f386-5bad-40ef-b6ef-4c571fa0b624", null], ["attempt", null, "ATTEMPTED"], ["outcome", null, "DELIVERED_UNACKED"], ["outcome", null, "ACKED_ORDER_ONLY"]]}
+STDERR_TAIL= plexity)
+[plugins] INFO Plugin 'web-perplexity' registered web provider: perplexity
+[plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 middleware, 0 slash command(s), 0 CLI command(s)
+[plugins] DEBUG Loading plugin 'web/searxng' (source=bundled, kind=backend, path=C:\Users\wigmore\.hermes\hermes-agent\plugins\web\searxng)
+[plugins] INFO Plugin 'web-searxng' registered web provider: searxng
+[plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 middleware, 0 slash command(s), 0 CLI command(s)
+[plugins] DEBUG Loading plugin 'web/tavily' (source=bundled, kind=backend, path=C:\Users\wigmore\.hermes\hermes-agent\plugins\web\tavily)
+[plugins] INFO Plugin 'web-tavily' registered web provider: tavily
+[plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 middleware, 0 slash command(s), 0 CLI command(s)
+[plugins] DEBUG Loading plugin 'web/xai' (source=bundled, kind=backend, path=C:\Users\wigmore\.hermes\hermes-agent\plugins\web\xai)
+[plugins] INFO Plugin 'web-xai' registered web provider: xai
+[plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 middleware, 0 slash command(s), 0 CLI command(s)
+[plugins] DEBUG Loading plugin 'wake-emitter' (source=user, kind=standalone, path=c:\users\wigmore\appdata\local\temp\w1q-fresh-fagft2w5\home\plugins\wake-emitter)
+[plugins] DEBUG Plugin wake-emitter registered hook: on_session_end
+[plugins] DEBUG   registered: 0 tool(s), 1 hook(s), 0 middleware, 0 slash command(s), 0 CLI command(s)
+[plugins] INFO Plugin discovery complete: 64 found, 60 enabled
+W1Q_FRESH_GREEN=PASS
+UNVERIFIED=real_delivery_to_GPT, peer_acknowledgement (stub sender + stub pane read)
