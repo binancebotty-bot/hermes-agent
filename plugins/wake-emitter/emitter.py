@@ -27,6 +27,8 @@ ACK_MAX_ERRORS = 3
 # turn_id absent: no positional identity, no dedupe; the event uuid is the identity.
 AT_LEAST_ONCE_KEY = "none:at-least-once"
 STATUS_SUFFIX = ".status.json"
+# Default-deny scope gate: one stable status for every out-of-scope turn.
+SKIPPED_OUT_OF_SCOPE = "SKIPPED_OUT_OF_SCOPE"
 # Cross-process writer coordination. An advisory file lock held only for one
 # critical section (a journal append, or the ATTEMPTED/send decision). It is a
 # lock, not a background service or worker: nothing is started or run later.
@@ -263,7 +265,7 @@ class WakeEmitter:
 
     def __init__(self, *, journal_path, peer_map_path, sender_path, pane_read_path=None,
                  ack_horizon_seconds=ACK_HORIZON_SECONDS, lane=None, enabled=False, logger=None,
-                 lock_timeout_seconds=None):
+                 lock_timeout_seconds=None, scope=None):
         self.journal_path = Path(journal_path)
         self.peer_map_path = Path(peer_map_path)
         self.sender_path = str(sender_path)
@@ -273,6 +275,7 @@ class WakeEmitter:
         self.ack_horizon_seconds = float(ack_horizon_seconds)
         self.lane = lane
         self.enabled = bool(enabled)
+        self.scope = scope
         self.logger = logger
         # Liveness record lives next to the journal so an operator can see the
         # path is alive without reading the journal.
@@ -367,6 +370,33 @@ class WakeEmitter:
                 pass
 
     # -- public seam -------------------------------------------------------
+    def _in_scope(self, payload):
+        """Default-deny scope gate. A malformed scope rejects; never raises.
+
+        Absent scope keeps the historical emit-on-every-completed-turn contract.
+        Present scope is an allowlist: every configured rule must pass, and a
+        scope with no effective rule allows nothing.
+        """
+        scope = self.scope
+        if scope is None:
+            return True
+        try:
+            if not isinstance(scope, dict):
+                return False
+            session_ids = scope.get("session_ids", [])
+            need_task = scope.get("require_task_id", False)
+            if not isinstance(session_ids, list) or not isinstance(need_task, bool):
+                return False
+            if not session_ids and not need_task:
+                return False
+            if session_ids and payload.get("session_id") not in session_ids:
+                return False
+            if need_task and not payload.get("task_id"):
+                return False
+            return True
+        except BaseException:
+            return False
+
     def on_session_end(self, **payload):
         """Hook callback. Returns a terminal status string; never raises."""
         if not self.enabled:
@@ -411,6 +441,10 @@ class WakeEmitter:
                 pass
 
     def _on_session_end_enabled(self, payload):
+        # Scope runs first: a rejected turn must produce no event, no outcome,
+        # no ack reconciliation and no send - it must look like it never happened.
+        if not self._in_scope(payload):
+            return SKIPPED_OUT_OF_SCOPE
         # Reconcile earlier deliveries first: this invocation was happening anyway,
         # so an observed ACK costs no new process and no new transport.
         self._reconcile_acks(payload)
@@ -831,6 +865,7 @@ def build_from_ctx(ctx):
         ack_horizon_seconds=config("ack_horizon_seconds", ACK_HORIZON_SECONDS),
         lane=config("lane", None),
         enabled=bool(config("enabled", False)),
+        scope=config("scope", None),
         logger=getattr(ctx, "logger", None),
     )
 

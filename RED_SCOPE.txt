@@ -1,0 +1,318 @@
+..........FF..FFF.FFFFFFFFF............................................. [ 88%]
+.........                                                                [100%]
+================================== FAILURES ===================================
+______________ test_scope_is_read_from_ctx_and_defaults_to_none _______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_scope_is_read_from_ctx_an0')
+
+    def test_scope_is_read_from_ctx_and_defaults_to_none(tmp_path):
+        emitter = _load()
+        default_worker, _ = _worker(tmp_path / "none", emitter)
+>       assert default_worker.scope is None
+               ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'WakeEmitter' object has no attribute 'scope'
+
+tests\test_emitter_scope.py:93: AttributeError
+_ test_a_unlisted_session_without_task_id_is_skipped_with_no_journal_or_send __
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_a_unlisted_session_withou0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDAC7790>
+
+    def test_a_unlisted_session_without_task_id_is_skipped_with_no_journal_or_send(tmp_path, monkeypatch):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, {"session_ids": [_BG]})
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_CHAT, task_id=None)) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:103: AssertionError
+______________ test_d_require_task_id_without_task_id_is_skipped ______________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_d_require_task_id_without0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA759D0>
+
+    def test_d_require_task_id_without_task_id_is_skipped(tmp_path, monkeypatch):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, {"require_task_id": True})
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id=None)) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:130: AssertionError
+___ test_e_both_set_but_only_one_satisfied_is_skipped[bg-task-session-None] ___
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_e_both_set_but_only_one_s0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDAB5290>
+session_id = 'bg-task-session', task_id = None
+
+    @pytest.mark.parametrize("session_id,task_id", [
+        (_BG, None),        # session matches, task requirement fails
+        (_CHAT, "task-9"),  # task requirement matches, session fails
+    ])
+    def test_e_both_set_but_only_one_satisfied_is_skipped(tmp_path, monkeypatch, session_id, task_id):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter,
+                                  {"session_ids": [_BG], "require_task_id": True})
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=session_id, task_id=task_id)) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:144: AssertionError
+_ test_e_both_set_but_only_one_satisfied_is_skipped[coordinator-chat-task-9] __
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_e_both_set_but_only_one_s1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA8CD50>
+session_id = 'coordinator-chat', task_id = 'task-9'
+
+    @pytest.mark.parametrize("session_id,task_id", [
+        (_BG, None),        # session matches, task requirement fails
+        (_CHAT, "task-9"),  # task requirement matches, session fails
+    ])
+    def test_e_both_set_but_only_one_satisfied_is_skipped(tmp_path, monkeypatch, session_id, task_id):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter,
+                                  {"session_ids": [_BG], "require_task_id": True})
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=session_id, task_id=task_id)) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:144: AssertionError
+_____ test_g_malformed_scope_is_skipped_and_never_raises[gpt6:assistant] ______
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_g_malformed_scope_is_skip0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDB73C90>
+scope = 'gpt6:assistant'
+
+    @pytest.mark.parametrize("scope", [
+        "gpt6:assistant",
+        {"session_ids": _BG},
+        {"session_ids": 7},
+        {"require_task_id": "yes"},
+        {"session_ids": [_BG], "require_task_id": 1},
+        [],
+    ])
+    def test_g_malformed_scope_is_skipped_and_never_raises(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id="task-9")) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:170: AssertionError
+_________ test_g_malformed_scope_is_skipped_and_never_raises[scope1] __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_g_malformed_scope_is_skip1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA9C650>
+scope = {'session_ids': 'bg-task-session'}
+
+    @pytest.mark.parametrize("scope", [
+        "gpt6:assistant",
+        {"session_ids": _BG},
+        {"session_ids": 7},
+        {"require_task_id": "yes"},
+        {"session_ids": [_BG], "require_task_id": 1},
+        [],
+    ])
+    def test_g_malformed_scope_is_skipped_and_never_raises(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id="task-9")) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:170: AssertionError
+_________ test_g_malformed_scope_is_skipped_and_never_raises[scope2] __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_g_malformed_scope_is_skip2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDB46D90>
+scope = {'session_ids': 7}
+
+    @pytest.mark.parametrize("scope", [
+        "gpt6:assistant",
+        {"session_ids": _BG},
+        {"session_ids": 7},
+        {"require_task_id": "yes"},
+        {"session_ids": [_BG], "require_task_id": 1},
+        [],
+    ])
+    def test_g_malformed_scope_is_skipped_and_never_raises(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id="task-9")) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:170: AssertionError
+_________ test_g_malformed_scope_is_skipped_and_never_raises[scope3] __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_g_malformed_scope_is_skip3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA75DD0>
+scope = {'require_task_id': 'yes'}
+
+    @pytest.mark.parametrize("scope", [
+        "gpt6:assistant",
+        {"session_ids": _BG},
+        {"session_ids": 7},
+        {"require_task_id": "yes"},
+        {"session_ids": [_BG], "require_task_id": 1},
+        [],
+    ])
+    def test_g_malformed_scope_is_skipped_and_never_raises(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id="task-9")) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:170: AssertionError
+_________ test_g_malformed_scope_is_skipped_and_never_raises[scope4] __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_g_malformed_scope_is_skip4')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BD1F8F50>
+scope = {'session_ids': ['bg-task-session'], 'require_task_id': 1}
+
+    @pytest.mark.parametrize("scope", [
+        "gpt6:assistant",
+        {"session_ids": _BG},
+        {"session_ids": 7},
+        {"require_task_id": "yes"},
+        {"session_ids": [_BG], "require_task_id": 1},
+        [],
+    ])
+    def test_g_malformed_scope_is_skipped_and_never_raises(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id="task-9")) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:170: AssertionError
+_________ test_g_malformed_scope_is_skipped_and_never_raises[scope5] __________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_g_malformed_scope_is_skip5')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA26850>
+scope = []
+
+    @pytest.mark.parametrize("scope", [
+        "gpt6:assistant",
+        {"session_ids": _BG},
+        {"session_ids": 7},
+        {"require_task_id": "yes"},
+        {"session_ids": [_BG], "require_task_id": 1},
+        [],
+    ])
+    def test_g_malformed_scope_is_skipped_and_never_raises(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_BG, task_id="task-9")) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:170: AssertionError
+_____ test_scope_present_without_an_effective_rule_default_denies[scope0] _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_scope_present_without_an_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA8FAD0>
+scope = {}
+
+    @pytest.mark.parametrize("scope", [
+        {},
+        {"session_ids": [], "require_task_id": False},
+    ])
+    def test_scope_present_without_an_effective_rule_default_denies(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload()) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:183: AssertionError
+_____ test_scope_present_without_an_effective_rule_default_denies[scope1] _____
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_scope_present_without_an_1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDB645D0>
+scope = {'session_ids': [], 'require_task_id': False}
+
+    @pytest.mark.parametrize("scope", [
+        {},
+        {"session_ids": [], "require_task_id": False},
+    ])
+    def test_scope_present_without_an_effective_rule_default_denies(tmp_path, monkeypatch, scope):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, scope)
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload()) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:183: AssertionError
+____________ test_skipped_turn_does_not_touch_an_existing_journal _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-9800/test_skipped_turn_does_not_tou0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000180BDA82AD0>
+
+    def test_skipped_turn_does_not_touch_an_existing_journal(tmp_path, monkeypatch):
+        emitter = _load()
+        worker, journal = _worker(tmp_path, emitter, {"session_ids": [_BG]})
+        journal.write_text(json.dumps({"kind": "sentinel", "utc": "pre-existing"}) + "\n",
+                           encoding="utf-8")
+        before = journal.read_text(encoding="utf-8")
+        calls = _sends(monkeypatch, emitter)
+>       assert worker.on_session_end(**_payload(session_id=_CHAT, task_id=None)) == SKIPPED
+E       AssertionError: assert 'DELIVERED_UNACKED' == 'SKIPPED_OUT_OF_SCOPE'
+E         
+E         - SKIPPED_OUT_OF_SCOPE
+E         + DELIVERED_UNACKED
+
+tests\test_emitter_scope.py:195: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_emitter_scope.py::test_scope_is_read_from_ctx_and_defaults_to_none
+FAILED tests/test_emitter_scope.py::test_a_unlisted_session_without_task_id_is_skipped_with_no_journal_or_send
+FAILED tests/test_emitter_scope.py::test_d_require_task_id_without_task_id_is_skipped
+FAILED tests/test_emitter_scope.py::test_e_both_set_but_only_one_satisfied_is_skipped[bg-task-session-None]
+FAILED tests/test_emitter_scope.py::test_e_both_set_but_only_one_satisfied_is_skipped[coordinator-chat-task-9]
+FAILED tests/test_emitter_scope.py::test_g_malformed_scope_is_skipped_and_never_raises[gpt6:assistant]
+FAILED tests/test_emitter_scope.py::test_g_malformed_scope_is_skipped_and_never_raises[scope1]
+FAILED tests/test_emitter_scope.py::test_g_malformed_scope_is_skipped_and_never_raises[scope2]
+FAILED tests/test_emitter_scope.py::test_g_malformed_scope_is_skipped_and_never_raises[scope3]
+FAILED tests/test_emitter_scope.py::test_g_malformed_scope_is_skipped_and_never_raises[scope4]
+FAILED tests/test_emitter_scope.py::test_g_malformed_scope_is_skipped_and_never_raises[scope5]
+FAILED tests/test_emitter_scope.py::test_scope_present_without_an_effective_rule_default_denies[scope0]
+FAILED tests/test_emitter_scope.py::test_scope_present_without_an_effective_rule_default_denies[scope1]
+FAILED tests/test_emitter_scope.py::test_skipped_turn_does_not_touch_an_existing_journal
+14 failed, 67 passed in 26.67s
