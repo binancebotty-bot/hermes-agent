@@ -1,0 +1,69 @@
+..F..........F                                                           [100%]
+================================== FAILURES ===================================
+________ test_listed_interactive_session_records_delivers_and_settles _________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10260/test_listed_interactive_sessio0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000163BB8CEA50>
+
+    def test_listed_interactive_session_records_delivers_and_settles(tmp_path, monkeypatch):
+        """A listed session's real turn produces event -> attempt -> settled ACK."""
+        scope = dict(CRON_SCOPE, interactive_sessions=[INTERACTIVE_SESSION])
+        _emitter, worker, journal = _two_lane_worker(tmp_path, scope)
+        payload = _interactive_payload()
+        _bind(worker, payload["task_id"], conv=CONV_B, generation=GEN)
+        calls = _sends(worker, monkeypatch)
+    
+>       assert worker.on_session_end(**payload) == "DELIVERED_UNACKED"
+E       AssertionError: assert 'SKIPPED_OUT_OF_SCOPE' == 'DELIVERED_UNACKED'
+E         
+E         - DELIVERED_UNACKED
+E         + SKIPPED_OUT_OF_SCOPE
+
+tests\test_w1f_non_cron_wake.py:125: AssertionError
+____________ test_hook_dispatch_reaches_plugin_in_a_fresh_process _____________
+
+tmp_path = WindowsPath('C:/Users/wigmore/AppData/Local/Temp/pytest-of-wigmore/pytest-10260/test_hook_dispatch_reaches_plu0')
+
+    def test_hook_dispatch_reaches_plugin_in_a_fresh_process(tmp_path):
+        """A FRESH Hermes process discovers the plugin and wakes on a chat turn.
+    
+        This is the load-time half, end to end through the real dispatch chain:
+        lifecycle.invoke_hook -> plugin discovery -> register_hook -> emitter ->
+        journal + stub transport + W1e settlement. No cron, no install, no config.
+    
+        A long-lived chat or gateway process that started before the plugin existed
+        never re-scans (plugins.py:408), so its turns dispatch into an empty
+        registry — which is why only cron (a new process per run) ever produced a row.
+        """
+        if not (_AGENT_ROOT / "hermes_cli" / "lifecycle.py").exists():
+            pytest.skip("hermes-agent runtime not present at %s" % _AGENT_ROOT)
+        home = tmp_path / "home"
+        scope = dict(CRON_SCOPE, interactive_sessions=[INTERACTIVE_SESSION])
+        journal = _write_throwaway_home(home, _load_plugin_dir(), scope)
+    
+        env = dict(os.environ)
+        env.update(HERMES_HOME=str(home), PYTHONPATH=str(_AGENT_ROOT),
+                   HERMES_DISABLE_LAZY_INSTALLS="1", PYTHONIOENCODING="utf-8")
+        env.pop("PYTHONPATH_ORIG", None)
+        proc = subprocess.run(
+            [sys.executable, "-c", _CHILD, INTERACTIVE_SESSION, str(journal),
+             str(home / "state" / "task_bindings.jsonl"), CONV_B, str(GEN)],
+            capture_output=True, text=True, timeout=300, env=env, cwd=str(home))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        report = json.loads(proc.stdout.strip().splitlines()[-1])
+    
+        assert report["discovered"] is True, report
+        assert report["saw_plugin"] is True, "a fresh process must load the plugin: %s" % report
+        kinds = [kind for kind, _task, _outcome in report["rows"]]
+>       assert kinds.count("event") == 1, "one completion, one event: %s" % report
+E       AssertionError: one completion, one event: {'hook_results': ['SKIPPED_OUT_OF_SCOPE'], 'sweep_result': ['SKIPPED'], 'discovered': True, 'saw_plugin': True, 'rows': []}
+E       assert 0 == 1
+E        +  where 0 = <built-in method count of list object at 0x00000163BB946940>('event')
+E        +    where <built-in method count of list object at 0x00000163BB946940> = [].count
+
+tests\test_w1f_non_cron_wake.py:320: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_w1f_non_cron_wake.py::test_listed_interactive_session_records_delivers_and_settles
+FAILED tests/test_w1f_non_cron_wake.py::test_hook_dispatch_reaches_plugin_in_a_fresh_process
+2 failed, 12 passed in 4.77s
+PYTEST_EXIT=1
