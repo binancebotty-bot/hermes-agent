@@ -3,7 +3,7 @@ import contextlib
 import json
 from types import SimpleNamespace
 
-import hermes_bootstrap  # noqa: F401
+import hermes_bootstrap
 import pytest
 import pytest_asyncio
 from aiohttp import web
@@ -15,7 +15,9 @@ from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_authority import LiveSession, SessionAuthority
 from hermes_state import SessionDB
 from gateway.session_results import admission_result
-from hermes_state_runtime import begin_runtime_epoch, get_session_admission, list_session_admissions, settle_session_input
+from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, claim_session_input,
+                                  get_session_admission, list_session_admissions,
+                                  recover_session_inputs, settle_session_input)
 
 PROFILE = "owned"
 SESSION = "site"
@@ -57,7 +59,8 @@ async def door(tmp_path, monkeypatch):
     app.router.add_get("/api/sessions/{session_id}/turns/{delivery_id}", adapter._handle_session_turn_status)
     try:
         async with TestClient(TestServer(app)) as client:
-            yield SimpleNamespace(client=client, db=db, authority=authority, adapter=adapter, hold=hold)
+            yield SimpleNamespace(client=client, db=db, authority=authority, adapter=adapter,
+                                  hold=hold, epoch=epoch)
     finally:
         hold.set()
         task = authority.sessions[SESSION].task
@@ -83,14 +86,62 @@ async def _get(door, session_id, delivery_id, key=SITE_KEY):
         headers={"Authorization": f"Bearer {key}"})
 
 
+def _queued_row(door, request_id):
+    """A durable admission row with no route/worker around it, so the stored state is exact."""
+    return admit_session_input(door.db, epoch=door.epoch, principal_id="test", session_id=SESSION,
+                               request_id=request_id, payload={"text": "hello"})
+
+
 @pytest.mark.asyncio
-async def test_open_admission_is_queued_or_running(door):
-    delivery_id = await _admit(door, "open")
-    response = await _get(door, SESSION, delivery_id)
+async def test_queued_admission_is_queued(door):
+    row = _queued_row(door, "queued")
+    response = await _get(door, SESSION, row["admission_id"])
     body = await response.json()
     assert response.status == 200
-    assert body["status"] in {"QUEUED", "RUNNING"}
-    assert body["delivery_id"] == delivery_id
+    assert body["status"] == "QUEUED"
+    assert body["delivery_id"] == row["admission_id"]
+
+
+@pytest.mark.asyncio
+async def test_claimed_admission_is_running(door):
+    row = _queued_row(door, "claimed")
+    claimed = claim_session_input(door.db, epoch=door.epoch, session_id=SESSION)
+    assert claimed["status"] == "started"
+    response = await _get(door, SESSION, row["admission_id"])
+    body = await response.json()
+    assert response.status == 200
+    assert body["status"] == "RUNNING"
+    assert body["delivery_id"] == row["admission_id"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_admission_is_unknown(door):
+    row = _queued_row(door, "unknown")
+    assert claim_session_input(door.db, epoch=door.epoch, session_id=SESSION)["status"] == "started"
+    restarted = begin_runtime_epoch(door.db, instance_id="turn-status-restart")
+    assert recover_session_inputs(door.db, epoch=restarted) >= 1
+    response = await _get(door, SESSION, row["admission_id"])
+    body = await response.json()
+    assert response.status == 200
+    assert body["status"] == "UNKNOWN"
+    assert body["delivery_id"] == row["admission_id"]
+
+
+@pytest.mark.asyncio
+async def test_oversized_terminal_result_is_truncated(door):
+    row = _queued_row(door, "oversized")
+    claimed = claim_session_input(door.db, epoch=door.epoch, session_id=SESSION)
+    settle_session_input(door.db, epoch=door.epoch, admission_id=row["admission_id"],
+                         generation=claimed["generation"], outcome="completed",
+                         result={"final_response": "x" * 70000, "messages": []})
+    response = await _get(door, SESSION, row["admission_id"])
+    text = await response.text()
+    body = json.loads(text)
+    assert response.status == 200
+    assert body["status"] == "TERMINAL" and body["outcome"] == "completed"
+    assert body["truncated"] is True
+    assert isinstance(body["result"], str)
+    assert len(body["result"].encode("utf-8")) == 65536
 
 
 @pytest.mark.asyncio
@@ -139,9 +190,19 @@ async def test_other_sessions_delivery_is_hidden(door):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", [MASTER_KEY, "w" * 48])
-async def test_non_chat_all_caller_is_forbidden(door, key):
-    response = await _get(door, SESSION, "missing", key)
+async def test_master_key_reads_terminal_body(door):
+    delivery_id = await _admit(door, "master")
+    door.hold.set()
+    await asyncio.wait_for(door.authority.sessions[SESSION].task, 5)
+    response = await _get(door, SESSION, delivery_id, MASTER_KEY)
+    body = await response.json()
+    assert response.status == 200
+    assert body["status"] == "TERMINAL" and body["outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_scoped_key_without_chat_all_is_forbidden(door):
+    response = await _get(door, SESSION, "missing", "w" * 48)
     assert response.status == 403
 
 

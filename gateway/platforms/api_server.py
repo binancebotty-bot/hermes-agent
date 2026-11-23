@@ -3002,7 +3002,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_session_turn_status(self, request: web.Request) -> web.Response:
         """Read the durable state of an admitted chat turn."""
         session_id = request.match_info["session_id"]
-        grant_error = await self._scoped_session_grant(request)
+        grant_error = await self._scoped_session_grant(request) if request.get("scoped_key_label") else None
         if grant_error is not None:
             return grant_error
         db = await self._ensure_session_db_async()

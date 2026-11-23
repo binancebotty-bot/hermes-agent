@@ -724,6 +724,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session. `include_compacted=true` also returns the turns a context compaction archived (default: live transcript only). `inline_images=false` renders image attachments as `[image]` placeholders instead of inline data URIs — the transcript travels in kilobytes, for clients reading over a network |
+| `GET` | `/api/sessions/{id}/turns/{delivery_id}` | Durable state of an admitted turn — see [Turn status](#turn-status) |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
@@ -741,6 +742,10 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"input": "what files changed in the last hour?"}'
 ```
+
+### Turn status
+
+`GET /api/sessions/{session_id}/turns/{delivery_id}` returns the durable state of an admitted turn. `status` is `UNKNOWN`, `QUEUED`, `RUNNING` or `TERMINAL`; a terminal body also carries `outcome` (`completed`, `failed`, `interrupted`, `cancelled` or `steered`). When terminal and a result was stored, `result` is a JSON object while `truncated` is `false`, and a 65536-byte JSON-text prefix string once `truncated` is `true` — the type changes with size, and the cap applies to the `result` field only, so the whole body is slightly larger. A `404` with `"status": "UNKNOWN"` covers both an absent delivery id and an id belonging to a different session.
 
 ## Skills and toolsets discovery
 
