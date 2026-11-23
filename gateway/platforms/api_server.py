@@ -3016,10 +3016,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                    "delivery_id": delivery_id, "session_id": session_id}
         if admission is None or admission.get("target_session_id") != session_id:
             return web.json_response(unknown, status=404)
-        status = str(admission.get("status", "")).upper()
-        if status not in {"COMPLETED", "FAILED", "CANCELLED", "EXPIRED"}:
+        status = str(admission.get("status", "")).lower()
+        if status == "unknown":
+            return web.json_response({"object": "hermes.session.chat.turn", "status": "UNKNOWN",
+                "delivery_id": delivery_id, "session_id": session_id})
+        if status != "terminal":
             return web.json_response({"object": "hermes.session.chat.turn",
-                "status": "RUNNING" if status == "RUNNING" else "QUEUED",
+                "status": "RUNNING" if status == "started" else "QUEUED",
                 "delivery_id": delivery_id, "session_id": session_id})
         body = {"object": "hermes.session.chat.turn", "status": "TERMINAL",
                 "delivery_id": delivery_id, "session_id": session_id,
@@ -3031,7 +3034,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             encoded = json.dumps(payload, separators=(",", ":"))
             limit = 65536
             if len(encoded.encode("utf-8")) > limit:
-                body.update(result_available=True, result=encoded[:limit], truncated=True)
+                body.update(result_available=True, result=encoded.encode("utf-8")[:limit].decode("utf-8", errors="ignore"), truncated=True)
             else:
                 body.update(result_available=True, result=payload, truncated=False)
         return web.json_response(body)
