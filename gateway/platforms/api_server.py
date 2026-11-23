@@ -3530,6 +3530,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response("Session queue unavailable", 503, code="queue_unavailable")
 
         request["delivery_id"] = receipt.admission_id  # the committed row, for the access line
+        delivery_id = receipt.admission_id
+        if not isinstance(delivery_id, str):
+            delivery_id = str(delivery_id)
 
         def queued(status):
             # The input is durably committed; applying it to the running turn is best effort and
@@ -3537,7 +3540,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return web.json_response({
                 "object": "hermes.session.chat.steer",
                 "session_id": sid, "status": status,
-                "delivery_id": receipt.admission_id, "retryable": False,
+                "delivery_id": delivery_id, "retryable": False,
             }, status=202, headers=self._session_headers(sid, None))
 
         if busy or handle.execution_state != "idle":
