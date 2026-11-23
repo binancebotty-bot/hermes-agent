@@ -85,24 +85,39 @@ def reconcile(rows, config=None):
 
 
 def reconcile_startup(authority, config=None):
+    """Catch up completed admissions in bounded, durable batches before the gateway serves."""
     if not enabled(config):
         return 0
-    with authority.db._read_ctx() as conn:
-        rows = [dict(row) for row in conn.execute("SELECT admission_id,target_session_id,principal_id,outcome FROM session_admissions WHERE status='terminal' AND outcome='completed'")]
-    return reconcile(rows, config)
+    conn = _connect()
+    try:
+        _delivery.ensure_schema(conn)
+        conn.execute('CREATE INDEX IF NOT EXISTS ix_wake_enrol_admission ON enrolments(admission_id)')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ux_wake_outbox_admission ON outbox(admission_id)')
+        conn.execute('ATTACH DATABASE ? AS authority', (str(authority.db.db_path),))
+        recipient = _config(config).get('native_wake', {}).get('recipient_conversation_id')
+        last = ''
+        inserted = 0
+        while True:
+            batch = conn.execute("SELECT e.admission_id,e.task_key,e.session_id,e.principal,e.target,e.state,a.target_session_id,a.principal_id,a.outcome "
+                                 "FROM authority.session_admissions a JOIN main.enrolments e ON e.admission_id=a.admission_id "
+                                 "WHERE a.status='terminal' AND a.outcome='completed' AND e.state IN ('open','consumed') "
+                                 "AND e.admission_id>? ORDER BY e.admission_id LIMIT 200", (last,)).fetchall()
+            if not batch:
+                break
+            last = batch[-1][0]
+            for admission_id, task_key, session, principal, target, state, target_session_id, principal_id, outcome in batch:
+                if target != recipient or session != target_session_id or principal != principal_id:
+                    continue
+                record = {'admission_id': admission_id, 'request_id': task_key, 'session_id': session, 'outcome': outcome, 'created_at': _now()}
+                if state == 'open':
+                    inserted += _store.resolve_and_enqueue(conn, record, _now()) == _store.ENROLLED
+                else:
+                    inserted += _store.reconcile(conn, [record])
+        return inserted
+    finally:
+        conn.close()
 
 
 def deliver(admission_id, adapter=None, config=None):
-    if not enabled(config):
-        return 'DISABLED'
-    settings = _config(config).get('native_wake', {})
-    recipient = settings.get('recipient_conversation_id', '')
-    # No approved transport is configured; an empty binding must never reach deliver_once.
-    if not recipient or adapter is None:
-        return 'HELD_NO_TARGET'
-    return 'HELD_NO_TARGET'
-
-
-class _FailClosedAdapter:
-    def send(self, envelope):
-        return (_delivery.BUSY, '')
+    """Keep delivery parked: this change has no authenticated destination resolver or transport."""
+    return 'HELD_NO_TARGET' if enabled(config) else 'DISABLED'

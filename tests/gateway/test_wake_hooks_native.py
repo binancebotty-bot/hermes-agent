@@ -152,26 +152,33 @@ def test_empty_recipient_delivery_never_calls_adapter(tmp_path, monkeypatch):
 
 
 def test_startup_reconciliation_uses_authority_db_and_is_idempotent(tmp_path, monkeypatch):
-    from contextlib import contextmanager
     from types import SimpleNamespace
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     config = {'native_wake': {'enabled': True, 'recipient_conversation_id': 'chat-id'}}
     wake_hooks.enrol_admission(admission_id='boot', session_id='s', principal='p', opted_in=True, config=config)
     with sqlite3.connect(tmp_path / 'wake_outbox.sqlite3') as conn:
         conn.execute("UPDATE enrolments SET state='consumed' WHERE admission_id='boot'")
-    class AuthorityDB:
-        @contextmanager
-        def _read_ctx(self):
-            conn = sqlite3.connect(tmp_path / 'authority.sqlite3')
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
-    with sqlite3.connect(tmp_path / 'authority.sqlite3') as conn:
+    authority_db = tmp_path / 'authority.sqlite3'
+    with sqlite3.connect(authority_db) as conn:
         conn.execute('CREATE TABLE session_admissions (admission_id TEXT, target_session_id TEXT, principal_id TEXT, outcome TEXT, status TEXT)')
         conn.execute("INSERT INTO session_admissions VALUES ('boot','s','p','completed','terminal')")
-    authority = SimpleNamespace(db=AuthorityDB())
+    authority = SimpleNamespace(db=SimpleNamespace(db_path=str(authority_db)))
     assert wake_hooks.reconcile_startup(authority, config) == 1
     assert wake_hooks.reconcile_startup(authority, config) == 0
     assert _count_rows(tmp_path / 'wake_outbox.sqlite3') == 1
+
+
+def test_startup_recovers_terminal_completion_with_open_enrolment(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    config = {'native_wake': {'enabled': True, 'recipient_conversation_id': 'chat-id'}}
+    wake_hooks.enrol_admission(admission_id='open-gap', session_id='s', principal='p', opted_in=True, config=config)
+    authority_db = tmp_path / 'authority.sqlite3'
+    with sqlite3.connect(authority_db) as conn:
+        conn.execute('CREATE TABLE session_admissions (admission_id TEXT, target_session_id TEXT, principal_id TEXT, outcome TEXT, status TEXT)')
+        conn.execute("INSERT INTO session_admissions VALUES ('open-gap','s','p','completed','terminal')")
+    authority = SimpleNamespace(db=SimpleNamespace(db_path=str(authority_db)))
+    assert wake_hooks.reconcile_startup(authority, config) == 1
+    assert wake_hooks.reconcile_startup(authority, config) == 0
+    with sqlite3.connect(tmp_path / 'wake_outbox.sqlite3') as conn:
+        assert conn.execute("SELECT count(*) FROM outbox WHERE admission_id='open-gap'").fetchone()[0] == 1
