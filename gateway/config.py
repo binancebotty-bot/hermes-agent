@@ -620,6 +620,7 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
     platforms: dict[Platform, PlatformConfig] = field(default_factory=dict)
+    native_wake: dict = field(default_factory=lambda: {"enabled": False})
     reset_triggers: list[str] = field(default_factory=lambda: ["/new", "/reset"])
     quick_commands: dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -721,6 +722,7 @@ class GatewayConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "platforms": {p.value: c.to_dict() for p, c in self.platforms.items()},
+            "native_wake": self.native_wake,
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
@@ -807,6 +809,7 @@ class GatewayConfig:
 
         return cls(
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
+            native_wake={"enabled": _coerce_bool(_coerce_dict(pick("native_wake")).get("enabled"), False)},
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",

@@ -192,6 +192,11 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
         settlement['settled'], settlement['response'] = finish_result(
             authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
             result=captured, prepared=prepared, transfers=transfers)
+        try:
+            from gateway.wake_hooks import completed as enqueue_wake
+            enqueue_wake(row, outcome=outcome)
+        except Exception:
+            logger.warning('Native wake enqueue failed', exc_info=True)
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
             _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)
