@@ -3440,10 +3440,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except (OSError, sqlite3.Error):
             return _error_response("Session queue unavailable", 503, code="queue_unavailable")
 
+        delivery_id = receipt.admission_id
+        if not isinstance(delivery_id, str):
+            delivery_id = str(delivery_id)
+
         def queued(status):
             return web.json_response({
                 "object": "hermes.session.chat.steer",
                 "session_id": sid, "status": status, "accepted": True,
+                "delivery_id": delivery_id,
             }, status=202, headers=self._session_headers(sid, None))
 
         if busy or handle.execution_state != "idle":
