@@ -1,0 +1,19 @@
+def _lane_has_room(lane: str, caps: dict[str, int], running: dict[str, int]) -> tuple[bool, int, int]:
+    """``(has_room, running, cap)`` for one lane.
+
+    A lane the caps file mentions is enforced strictly (cap 0 = no spawning). A lane it
+    does not mention keeps the old unmanaged behaviour so an unrelated provider is not
+    frozen out by a caps file that never knew about it.
+    """
+    if not lane:
+        # Empty lane (no provider_override): check if caps file explicitly manages 'unset'
+        cap = caps.get("", 0)
+        if "" in caps:
+            now = running.get("", 0)
+            return (now < cap, now, cap)   # 'unset' lane is managed
+        return (True, 0, 0)          # not managed: pre-existing behaviour
+    cap = caps.get(lane, 0)
+    if lane not in caps:
+        return (True, running.get(lane, 0), cap)   # lane not managed by caps file
+    now = running.get(lane, 0)
+    return (now < cap, now, cap)

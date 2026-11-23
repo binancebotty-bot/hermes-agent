@@ -1409,7 +1409,7 @@ class SessionAuthority:
                 import logging
                 logging.getLogger(__name__).exception('Deferred auto-reset of %s failed', route)
 
-    async def _resolve_settled_waiter(self, admission_id, response):
+    async def _resolve_settled_waiter(self, admission_id, response, live=None):
         """Hand the settled reply to its waiter. The adapter sending it adopted the turn's crash marker
         and releases it once the reply is ledgered (seconds with auto-TTS); a follower claimed before
         that replaces the one-slot marker, so a kill in between would lose the persisted reply: the
@@ -1418,10 +1418,15 @@ class SessionAuthority:
         released = None
         if adopter is not None and getattr(adopter, '_gateway_active_turn_token', None):
             released = adopter._gateway_marker_released = asyncio.Event()
-        waiter = self.waiters.pop(admission_id, None)
-        if waiter is None or waiter.done():
-            return
-        waiter.set_result(response)
+        # Pop+resolve under the session's mutation lock, the same lock a caller holds to register
+        # its waiter and read the terminal state: registration can therefore never land after this
+        # resolution, leaving a future nothing will ever resolve.
+        lock = live.mutation_lock if live is not None else contextlib.nullcontext()
+        async with lock:
+            waiter = self.waiters.pop(admission_id, None)
+            if waiter is None or waiter.done():
+                return
+            waiter.set_result(response)
         if released is not None and not (self.runner._draining or self.retiring):
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)

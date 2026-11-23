@@ -1,0 +1,78 @@
+"""
+Issuer resolution utilities for kanban task creation.
+
+This module implements the 4-step issuer resolution hierarchy:
+1. explicit `--created-by <role>` (for CLI users)
+2. explicit `--issuer` (for tool path - captures calling agent's seat)
+3. envelope sender (from control message) -> RESOLVED
+4. creating profile when running inside an agent session -> RESOLVED
+5. otherwise 'user' -> ISSUER_UNKNOWN
+"""
+
+import os
+from typing import Optional, Tuple
+
+
+def resolve_issuer(args: dict) -> Tuple[str, str]:
+    """
+    Resolve the issuing agent using the 4-step hierarchy.
+    
+    Returns:
+        Tuple of (issuer, issuer_state) where:
+        - issuer: The resolved issuer string (e.g., "hermes:systems-engineer", "user")
+        - issuer_state: The resolution state ("RESOLVED", "ISSUER_UNKNOWN", "ROUTE_UNRESOLVED")
+    """
+    # Step 1: Check for explicit issuer argument (highest priority)
+    if "issuer" in args and args["issuer"]:
+        issuer = str(args["issuer"]).strip()
+        if issuer and issuer not in ("", "user", "default", "NULL"):
+            return (issuer, "RESOLVED")
+    
+    # Step 2: Check for explicit created_by (CLI --created-by)
+    if "created_by" in args and args["created_by"]:
+        created_by = str(args["created_by"]).strip()
+        if created_by and created_by not in ("", "user", "default", "NULL"):
+            return (created_by, "RESOLVED")
+    
+    # Step 3: Check for envelope sender (control message context)
+    # This would typically come from message headers in a gateway context
+    # For now, we'll check session context as a proxy
+    session_id = args.get("session_id")
+    if session_id:
+        # In a real implementation, we would resolve the session to its originating agent
+        # For now, we use session-based resolution
+        return (f"session:{session_id}", "RESOLVED")
+    
+    # Step 4: Check for creating profile (agent session context)
+    # This is the profile running the tool
+    try:
+        from hermes_cli.profiles import current_profile_name
+        profile = current_profile_name("worker") or "worker"
+        
+        if profile and profile != "default" and profile != "worker":
+            return (profile, "RESOLVED")
+    except ImportError:
+        # Fallback if profile module not available
+        pass
+    
+    # Step 5: Fallback to 'user' with ISSUER_UNKNOWN
+    return ("user", "ISSUER_UNKNOWN")
+
+
+def get_created_by_for_profile(issuer: str, issuer_state: str) -> str:
+    """
+    Determine the created_by value based on issuer resolution.
+    
+    The created_by field should reflect the actual creator, not the issuer.
+    For tool-created cards, this is typically the profile name.
+    """
+    # If we have a resolved issuer that's not 'user', use it as created_by
+    if issuer_state == "RESOLVED" and issuer != "user":
+        return issuer
+    
+    # Otherwise, use the persisted identity (profile name)
+    try:
+        from hermes_cli.profiles import current_profile_name
+        return current_profile_name("worker") or "default"
+    except ImportError:
+        return "default"

@@ -1,3 +1,6 @@
+import time
+import pathlib
+import os
 """Restore only private, profile-bound local policy into the existing authority."""
 import asyncio
 import contextlib
@@ -170,7 +173,69 @@ def _stray_route_target(authority, receipt, session_id):
     return True
 
 
+# --- unrestorable receipts -------------------------------------------------------------------
+# A session whose compression receipt is gone can never be restored, yet the recovery path retried
+# it tens of times a minute forever, because nothing recorded that the refusal was terminal. A
+# known-unrestorable sid now short-circuits before any read, and the marker is durable.
+_UNRESTORABLE_PATH = pathlib.Path.home() / '.hermes' / 'state' / 'unrestorable_sessions.json'
+_TERMINAL_REFUSALS = ('storage_unavailable',)
+
+
+def _load_unrestorable():
+    try:
+        return set(json.loads(_UNRESTORABLE_PATH.read_text(encoding='utf-8')).get('sessions', []))
+    except Exception:
+        return set()
+
+
+def _session_is_ended(sid):
+    """True only when the store says this session is over (or it was never a session).
+
+    NEVER poison a live session. Recording a running session as permanently unrestorable would
+    make it unrestorable forever - the hottest way to kill working sessions - so a live row is
+    always False here and only an ended (or unknown) sid may become terminal.
+    """
+    import sqlite3
+    try:
+        db = pathlib.Path.home() / '.hermes' / 'state.db'
+        con = sqlite3.connect('file:%s?mode=ro' % db.as_posix(), uri=True, timeout=5)
+        try:
+            row = con.execute('SELECT ended_at FROM sessions WHERE id=?', (sid,)).fetchone()
+        finally:
+            con.close()
+        if row is None:
+            return True
+        return row[0] is not None
+    except Exception:
+        return False
+
+
+def _remember_unrestorable(sid):
+    if not _session_is_ended(sid):
+        return
+    known = _load_unrestorable()
+    if sid in known:
+        return
+    known.add(sid)
+    try:
+        _UNRESTORABLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _UNRESTORABLE_PATH.with_suffix('.%s.tmp' % os.getpid())
+        tmp.write_text(json.dumps({'sessions': sorted(known),
+                                   'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}),
+                       encoding='utf-8')
+        os.replace(tmp, _UNRESTORABLE_PATH)
+    except Exception:
+        pass
+
+
+def _is_unrestorable(sid):
+    return sid in _load_unrestorable()
+
+
 def restore_local_session(authority, sid):
+    if _is_unrestorable(sid):
+        # terminal: the receipt is gone, so a retry can only repeat the same refusal
+        raise _ReceiptRefused('permanently_unrestorable')
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
     from gateway.session_policy import restore_policy
@@ -192,7 +257,10 @@ def restore_local_session(authority, sid):
         # The client only sees the bounded code: gateway.log names the check that refused (#140099).
         logging.getLogger(__name__).warning('Local session %s receipt refused: %s', sid, _refused_check(exc))
         if isinstance(exc, RuntimeStoreError):
+            if exc.reason in _TERMINAL_REFUSALS:
+                _remember_unrestorable(sid)
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
+        _remember_unrestorable(sid)
         raise _ReceiptRefused('storage_unavailable') from exc
     adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:

@@ -148,7 +148,27 @@ async def steer_queued(connection, ref, params):
     if receipt.status != 'queued':
         raise RuntimeStoreError('admission_started')
     if 'steer' not in queued_controls(authority, row):
-        raise RuntimeStoreError('unsupported_control')
+        # The explicit API chat:all capability submits the same durable
+        # ticketed prompt as a local viewer, with server-stamped provenance.
+        # Ordinary scoped API credentials never have this authority actor.
+        provenance = row['payload'].get('local_operator_v1')
+        operator_admission = (
+            connection.actor.subject == 'scoped:chatgpt-site'
+            and 'session:operator' in connection.actor.capabilities
+            and row.get('principal_id') == connection.actor.subject
+            and row.get('intent') == 'queue'
+            and set(row['payload']) == {'text', 'local_operator_v1'}
+            and isinstance(provenance, dict)
+            and provenance == {
+                'profile_id': authority.profile_id,
+                'session_id': ref.session_id,
+                'principal_id': connection.actor.subject,
+            }
+            and isinstance(row['payload']['text'], str)
+            and bool(row['payload']['text'].strip())
+        )
+        if not operator_admission:
+            raise RuntimeStoreError('unsupported_control')
     handle = authority._handle(ref)
     if handle.execution_state != 'running':
         raise RuntimeStoreError('session_idle')

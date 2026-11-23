@@ -1,0 +1,5 @@
+name: pool
+version: 1.0.0
+description: "Pool delegation strategy: every delegate_task task may name a lane, and each lane is its own provider/model route, so a fan-out can spread across providers two children per provider. A task without a lane uses the delegation section's own route, which is exactly the default behaviour."
+author: NousResearch
+kind: backend

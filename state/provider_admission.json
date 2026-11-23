@@ -1,0 +1,59 @@
+[
+  {
+    "provider": "gemini",
+    "model": "gemini-3.1-flash-lite",
+    "status": "HTTP_404",
+    "http_code": 404,
+    "native_tool_call": null,
+    "latency_ms": 73,
+    "probed_at": "2026-11-14T18:50:50.426270"
+  },
+  {
+    "provider": "zai",
+    "model": "glm-4.5-flash",
+    "status": "HTTP_401",
+    "http_code": 401,
+    "native_tool_call": null,
+    "latency_ms": 249,
+    "probed_at": "2026-11-14T18:50:50.675330"
+  },
+  {
+    "provider": "nvidia",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "status": "HTTP_404",
+    "http_code": 404,
+    "native_tool_call": null,
+    "latency_ms": 95,
+    "probed_at": "2026-11-14T18:50:50.770755"
+  },
+  {
+    "provider": "nous",
+    "model": "stepfun/step-3.7-flash:free",
+    "status": "SKIPPED",
+    "http_code": null,
+    "native_tool_call": null,
+    "latency_ms": null,
+    "probed_at": "2026-11-14T18:50:50.770775",
+    "reason": "OAuth not implemented for Nous"
+  },
+  {
+    "provider": "nous",
+    "model": "meituan/longcat-2.5:free",
+    "status": "SKIPPED",
+    "http_code": null,
+    "native_tool_call": null,
+    "latency_ms": null,
+    "probed_at": "2026-11-14T18:50:50.770779",
+    "reason": "OAuth not implemented for Nous"
+  },
+  {
+    "provider": "nous",
+    "model": "upstage/solar-mini4:free",
+    "status": "SKIPPED",
+    "http_code": null,
+    "native_tool_call": null,
+    "latency_ms": null,
+    "probed_at": "2026-11-14T18:50:50.770781",
+    "reason": "OAuth not implemented for Nous"
+  }
+]
