@@ -14,7 +14,8 @@ from gateway.platforms import api_server
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_authority import LiveSession, SessionAuthority
 from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
+from gateway.session_results import admission_result
+from hermes_state_runtime import begin_runtime_epoch, get_session_admission, list_session_admissions, settle_session_input
 
 PROFILE = "owned"
 SESSION = "site"
@@ -102,14 +103,16 @@ async def test_completed_admission_returns_terminal_payload(door):
     assert response.status == 200
     assert body["status"] == "TERMINAL"
     assert body["outcome"] == "completed"
-    assert body["result"]["final_response"] == "settled reply"
+    assert body["result"] == admission_result(door.db, delivery_id)
 
 
 @pytest.mark.asyncio
 async def test_failed_terminal_admission(door):
     delivery_id = await _admit(door, "failed")
     admission = list_session_admissions(door.db, session_id=SESSION, pending_only=False)[0]
-    door.db.set_session_admission_outcome(admission["admission_id"], outcome="failed")
+    row = get_session_admission(door.db, admission_id=admission["admission_id"])
+    settle_session_input(door.db, epoch=row["owner_epoch"], admission_id=row["admission_id"],
+                         generation=row["generation"], outcome="failed")
     response = await _get(door, SESSION, delivery_id)
     assert response.status == 200
     body = await response.json()
@@ -153,7 +156,9 @@ async def test_identical_reads_have_identical_bodies(door):
 async def test_terminal_without_payload_marks_unavailable(door):
     delivery_id = await _admit(door, "no-payload")
     admission = list_session_admissions(door.db, session_id=SESSION, pending_only=False)[0]
-    door.db.set_session_admission_outcome(admission["admission_id"], outcome="completed")
+    row = get_session_admission(door.db, admission_id=admission["admission_id"])
+    settle_session_input(door.db, epoch=row["owner_epoch"], admission_id=row["admission_id"],
+                         generation=row["generation"], outcome="completed")
     response = await _get(door, SESSION, delivery_id)
     body = await response.json()
     assert response.status == 200 and body["status"] == "TERMINAL"
