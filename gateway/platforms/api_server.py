@@ -1620,6 +1620,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ("GET", re.compile(r"^/api/sessions$")),
         ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+$")),
         ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/messages$")),
+        ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/turns/[A-Za-z0-9_-]+$")),
         ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/chat$")),
         ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/messages$")),
         ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/send$")),
@@ -1825,6 +1826,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("GET", "/api/sessions/{session_id}/turns/{delivery_id}", self._handle_session_turn_status),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/messages", self._handle_session_chat),
@@ -2995,6 +2997,44 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from gateway.session_ingress_media import collect_unheld_api_images
             await asyncio.to_thread(collect_unheld_api_images, db)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
+
+    @_require_auth
+    async def _handle_session_turn_status(self, request: web.Request) -> web.Response:
+        """Read the durable state of an admitted chat turn."""
+        session_id = request.match_info["session_id"]
+        grant_error = await self._scoped_session_grant(request)
+        if grant_error is not None:
+            return grant_error
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        from hermes_state_runtime import get_session_admission
+        from gateway.session_results import admission_result
+        delivery_id = request.match_info["delivery_id"]
+        admission = await asyncio.to_thread(get_session_admission, db, admission_id=delivery_id)
+        unknown = {"object": "hermes.session.chat.turn", "status": "UNKNOWN",
+                   "delivery_id": delivery_id, "session_id": session_id}
+        if admission is None or admission.get("target_session_id") != session_id:
+            return web.json_response(unknown, status=404)
+        status = str(admission.get("status", "")).upper()
+        if status not in {"COMPLETED", "FAILED", "CANCELLED", "EXPIRED"}:
+            return web.json_response({"object": "hermes.session.chat.turn",
+                "status": "RUNNING" if status == "RUNNING" else "QUEUED",
+                "delivery_id": delivery_id, "session_id": session_id})
+        body = {"object": "hermes.session.chat.turn", "status": "TERMINAL",
+                "delivery_id": delivery_id, "session_id": session_id,
+                "outcome": admission.get("outcome")}
+        payload = await asyncio.to_thread(admission_result, db, delivery_id)
+        if payload is None:
+            body.update(result_available=False, reason="No stored result payload")
+        else:
+            encoded = json.dumps(payload, separators=(",", ":"))
+            limit = 65536
+            if len(encoded.encode("utf-8")) > limit:
+                body.update(result_available=True, result=encoded[:limit], truncated=True)
+            else:
+                body.update(result_available=True, result=payload, truncated=False)
+        return web.json_response(body)
 
     @_require_auth
     async def _handle_session_messages(self, request: web.Request) -> web.Response:
