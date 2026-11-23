@@ -1489,6 +1489,11 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_bot import release_superseded_bot_chat_at_boot
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, db, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
+    try:
+        from gateway.wake_hooks import reconcile_startup
+        await asyncio.to_thread(reconcile_startup, authority, runner.config.to_dict())
+    except Exception:
+        logging.getLogger(__name__).warning('Native wake startup reconciliation failed', exc_info=True)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.
     from gateway.session_local_adoption import adopt_local_compressions

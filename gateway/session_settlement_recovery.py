@@ -194,7 +194,7 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
             result=captured, prepared=prepared, transfers=transfers)
         try:
             from gateway.wake_hooks import completed as enqueue_wake
-            enqueue_wake(row, outcome=outcome)
+            enqueue_wake({**row, 'session_id': row.get('target_session_id')}, outcome=outcome, config=None)
         except Exception:
             logger.warning('Native wake enqueue failed', exc_info=True)
         with live.event_stream.lock:

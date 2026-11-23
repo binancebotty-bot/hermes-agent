@@ -120,9 +120,14 @@ def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
     yield partial(store.bind_request_admission, durable_key[0], admitted[2]['admission_id'])
     if run_kwargs.get('native_wake') is True:
         try:
+            from gateway.config import load_gateway_config
+            from gateway.session_authority import get_session_admission
             from gateway.wake_hooks import enrol_admission
-            enrol_admission(admission_id=admitted[2]['admission_id'], session_id=admitted[1].session_id,
-                            principal='api', target=run_kwargs.get('native_wake_target'), opted_in=True)
+            authority = admitted[0]
+            persisted = get_session_admission(authority.db, admission_id=admitted[2]['admission_id'])
+            config = load_gateway_config().to_dict()
+            enrol_admission(admission_id=persisted['admission_id'], session_id=persisted['target_session_id'],
+                            principal=persisted['principal_id'], opted_in=True, config=config)
         except Exception:
             logging.getLogger(__name__).warning('Native wake enrolment failed', exc_info=True)
     return (*admitted, False)
