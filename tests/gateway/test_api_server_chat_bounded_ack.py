@@ -155,7 +155,9 @@ async def test_busy_steer_answers_202_with_the_committed_id(door):
     assert response.status == 202, await response.text()
     body = await response.json()
     assert body["object"] == "hermes.session.chat.steer"
-    assert body["status"] == "steered" and body["accepted"] is True
+    assert body["status"] == "steered"
+    assert isinstance(body["delivery_id"], str) and body["delivery_id"], body
+    assert "accepted" not in body and body["retryable"] is False, body
     row = _row(_committed(door.db, BUSY), "steer-1")
     assert body["delivery_id"] == row["admission_id"]  # durable, lookable-up id
     assert [text for text, _ticket in agent.steered] == ["steer me"]  # the running turn took it
@@ -171,7 +173,9 @@ async def test_busy_queue_mode_answers_202_with_the_committed_id(door):
     assert response.status == 202, await response.text()
     body = await response.json()
     assert body["object"] == "hermes.session.chat.steer"
-    assert body["status"] == "queued" and body["accepted"] is True
+    assert body["status"] == "queued"
+    assert isinstance(body["delivery_id"], str) and body["delivery_id"], body
+    assert "accepted" not in body and body["retryable"] is False, body
     row = _row(_committed(door.db, BUSY), "queued-1")
     assert body["delivery_id"] == row["admission_id"]  # durable, lookable-up id
 
