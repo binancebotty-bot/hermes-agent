@@ -1620,6 +1620,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ("GET", re.compile(r"^/api/sessions$")),
         ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+$")),
         ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/messages$")),
+        ("GET", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/turns/[A-Za-z0-9_-]+$")),
         ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/chat$")),
         ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/messages$")),
         ("POST", re.compile(r"^/api/sessions/[A-Za-z0-9_-]+/send$")),
@@ -1825,6 +1826,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("GET", "/api/sessions/{session_id}/turns/{delivery_id}", self._handle_session_turn_status),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/messages", self._handle_session_chat),
@@ -2997,6 +2999,47 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
+    async def _handle_session_turn_status(self, request: web.Request) -> web.Response:
+        """Read the durable state of an admitted chat turn."""
+        session_id = request.match_info["session_id"]
+        grant_error = await self._scoped_session_grant(request) if request.get("scoped_key_label") else None
+        if grant_error is not None:
+            return grant_error
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        from hermes_state_runtime import get_session_admission
+        from gateway.session_results import admission_result
+        delivery_id = request.match_info["delivery_id"]
+        admission = await asyncio.to_thread(get_session_admission, db, admission_id=delivery_id)
+        unknown = {"object": "hermes.session.chat.turn", "status": "UNKNOWN",
+                   "delivery_id": delivery_id, "session_id": session_id}
+        if admission is None or admission.get("target_session_id") != session_id:
+            return web.json_response(unknown, status=404)
+        status = str(admission.get("status", "")).lower()
+        if status == "unknown":
+            return web.json_response({"object": "hermes.session.chat.turn", "status": "UNKNOWN",
+                "delivery_id": delivery_id, "session_id": session_id})
+        if status != "terminal":
+            return web.json_response({"object": "hermes.session.chat.turn",
+                "status": "RUNNING" if status == "started" else "QUEUED",
+                "delivery_id": delivery_id, "session_id": session_id})
+        body = {"object": "hermes.session.chat.turn", "status": "TERMINAL",
+                "delivery_id": delivery_id, "session_id": session_id,
+                "outcome": admission.get("outcome")}
+        payload = await asyncio.to_thread(admission_result, db, delivery_id)
+        if payload is None:
+            body.update(result_available=False, reason="No stored result payload")
+        else:
+            encoded = json.dumps(payload, separators=(",", ":"))
+            limit = 65536
+            if len(encoded.encode("utf-8")) > limit:
+                body.update(result_available=True, result=encoded.encode("utf-8")[:limit].decode("utf-8", errors="ignore"), truncated=True)
+            else:
+                body.update(result_available=True, result=payload, truncated=False)
+        return web.json_response(body)
+
+    @_require_auth
     async def _handle_session_messages(self, request: web.Request) -> web.Response:
         """GET /api/sessions/{session_id}/messages."""
         session_id = request.match_info["session_id"]
@@ -3319,6 +3362,96 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.info("Session SSE client disconnected while a live Bot Chat held the turn")
         return response
 
+    @staticmethod
+    def _abandon_waiter(authority, ticket, waiter) -> None:
+        """Drop our own future: settlement resolves whatever is registered, so an abandoned one is
+        never resolved, and the next caller's ``setdefault`` would adopt it and stall."""
+        if authority.waiters.get(ticket) is waiter:
+            authority.waiters.pop(ticket, None)
+
+    # INVARIANT: ``queued`` is answered only after the admission row is durably
+    # committed. It means "durably admitted, not yet finished" — never "accepted for
+    # execution". It must never be produced for a message that was not committed, and
+    # never used to imply the turn completed.
+    #
+    # RESIDUAL 1 (ratified): ``live.settling`` is set only by the turn-settlement path
+    # (session_settlement_recovery.py:189, before the commit at :192; one call site in
+    # the repo). Two peripheral paths terminalise an admission without the marker:
+    # cancel_session_input (hermes_state_runtime.py:345, reached from
+    # session_authority.py:840 and :1217) and resolve_unknown_session_input
+    # (hermes_state_runtime.py:758, reached from session_authority.py:907). If one of
+    # those ends THIS admission between the ack's read and its answer, the caller can be
+    # answered ``queued`` for a turn that has already ended. Accepted, not fixed: both
+    # are single atomic writes with a far smaller window than the multi-step settlement,
+    # and neither is on the ChatGPT send path.
+    #
+    # RESIDUAL 2 (ratified): the marker wait is bounded at 3 x 10ms = 30ms, deliberately
+    # below the Site's ack budget. Settlement retries transient storage errors with
+    # waits of 0.5s and 2s (session_settlement_recovery.py:205,216), so a settlement
+    # slower than ~30ms can still be answered ``queued`` while it is still committing.
+    # Accepted by design: a conservative queued beats exceeding the Site timeout. Do not
+    # raise this budget without the controller.
+    #
+    # Both residuals are safe-direction: they under-claim completion. Neither claims a
+    # delivery that did not happen, duplicates an effect, nor loses a message.
+    async def _await_chat_all_settlement(self, authority, sid, ticket) -> tuple[Optional[dict], bool]:
+        """``(terminal row, queued)`` for a committed chat:all admission.
+
+        Registering the waiter and checking the terminal state is ONE critical section, taken under
+        the session's ``mutation_lock`` — the lock settlement holds while it pops and resolves the
+        waiter. So a caller can never install a future settlement has already passed, and a
+        non-terminal read inside the section proves settlement has not run yet. A future that
+        settlement took under us re-reads instead of waiting again (no full-bound stall).
+        """
+        from hermes_state_runtime import get_session_admission
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CHAT_ALL_ACK_BOUND_S
+        live = authority.sessions[sid]
+        spins = 0
+        while True:
+            resettle_in = 0.0
+            async with live.mutation_lock:
+                row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
+                if row is None or row["status"] == "terminal":
+                    return row, False
+                if deadline - loop.time() > 0:
+                    waiter = authority.waiters.setdefault(ticket, loop.create_future())
+                else:
+                    waiter = None
+                    # The queued answer decides on a read taken NOW, inside the section: settlement
+                    # may have committed between the read above and this instant, and answering
+                    # "queued" from that stale row is the false signal this route removes.
+                    row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
+                    if row is not None and row["status"] == "terminal":
+                        return row, False
+                    # The terminal commit runs outside this lock; ``settling`` marks one in flight,
+                    # so "queued" is truthful only once that marker is gone (or the budget is spent).
+                    with live.event_stream.lock:
+                        settling = ticket in live.settling
+                    if settling and spins < 3:
+                        spins += 1
+                        resettle_in = 0.01  # slept OUTSIDE the lock: never block the drain
+                    else:
+                        # A clear marker proves nothing (it is popped with the commit): re-read, so a
+                        # commit that landed between the read above and this check still answers.
+                        row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
+                        if row is not None and row["status"] == "terminal":
+                            return row, False
+                        return row, True
+            if waiter is None:
+                await asyncio.sleep(resettle_in)
+                continue
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                self._abandon_waiter(authority, ticket, waiter)
+                continue  # the section re-reads before it decides
+            try:
+                await asyncio.wait_for(asyncio.shield(waiter), remaining)
+            except asyncio.TimeoutError:
+                if authority.waiters.get(ticket) is waiter:  # nothing woke us: still unsettled
+                    self._abandon_waiter(authority, ticket, waiter)
+                # Never answer queued off the stale row: re-enter and read at the decision.
+
     async def _chat_all_user_turn(self, request: web.Request) -> Optional[web.Response]:
         """Authenticated chat:all label alone may submit to the owner's canonical FIFO.
 
@@ -3332,7 +3465,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from gateway.session_contract import SessionActor, SessionRef, Submission
         from gateway.session_results import admission_result
         from gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
-        from hermes_state_runtime import get_session_admission
         import sqlite3
 
         sid = request.match_info["session_id"]
@@ -3397,10 +3529,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except (OSError, sqlite3.Error):
             return _error_response("Session queue unavailable", 503, code="queue_unavailable")
 
+        request["delivery_id"] = receipt.admission_id  # the committed row, for the access line
+        delivery_id = receipt.admission_id
+        if not isinstance(delivery_id, str):
+            delivery_id = str(delivery_id)
+
         def queued(status):
+            # The input is durably committed; applying it to the running turn is best effort and
+            # the authority promises nothing, so never claim an acceptance the caller would rely on.
             return web.json_response({
                 "object": "hermes.session.chat.steer",
-                "session_id": sid, "status": status, "accepted": True,
+                "session_id": sid, "status": status,
+                "delivery_id": delivery_id, "retryable": False,
             }, status=202, headers=self._session_headers(sid, None))
 
         if busy or handle.execution_state != "idle":
@@ -3425,36 +3565,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # worker/poll. Snapshot terminal state AFTER installing the waiter.
         ticket = receipt.admission_id
         request["delivery_id"] = ticket  # the committed row: durable across a restart
-        own_waiter = ticket not in authority.waiters
-        waiter = authority.waiters.setdefault(
-            ticket, asyncio.get_running_loop().create_future())
-        acknowledged = False
         try:
-            row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
-            if row is None:
-                return _error_response("Session admission unavailable", 503, code="queue_unavailable")
-            if row["status"] != "terminal":
-                try:
-                    await asyncio.wait_for(asyncio.shield(waiter), _CHAT_ALL_ACK_BOUND_S)
-                except asyncio.TimeoutError:
-                    # The caller's own budget is shorter than a turn. The input is already
-                    # committed and will run: answer its durable id, never a failure it could
-                    # resend, and never a claim that the turn was delivered or accepted.
-                    row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=ticket)
-                    if row is None or row["status"] != "terminal":
-                        acknowledged = True
-                        return web.json_response({
-                            "object": "hermes.session.chat.queued", "status": "queued",
-                            "session_id": sid, "delivery_id": ticket, "retryable": False,
-                        }, status=202, headers=self._session_headers(sid, None))
-            saved = await asyncio.to_thread(admission_result, authority.db, ticket)
+            row, queued = await self._await_chat_all_settlement(authority, sid, ticket)
         except RuntimeStoreError as exc:
             return store_error_response(_openai_error, exc)
-        finally:
-            # An acknowledged waiter stays registered: settlement (or a caller coalesced onto the
-            # same future) still needs it, and dropping it here would strand that caller forever.
-            if not acknowledged and own_waiter and authority.waiters.get(ticket) is waiter:
-                authority.waiters.pop(ticket, None)
+        if row is None:
+            return _error_response("Session admission unavailable", 503, code="queue_unavailable")
+        if queued:
+            # The caller's own budget is shorter than a turn. The input is already committed and
+            # will run: answer its durable id, never a failure it could resend, and never a claim
+            # that the turn was delivered or accepted.
+            return web.json_response({
+                "object": "hermes.session.chat.queued", "status": "queued",
+                "session_id": sid, "delivery_id": ticket, "retryable": False,
+            }, status=202, headers=self._session_headers(sid, None))
+        saved = await asyncio.to_thread(admission_result, authority.db, ticket)
         if not saved:
             return _error_response("Session result unavailable", 503, code="queue_unavailable")
         result = saved.get("result") or {}
